@@ -1,5 +1,5 @@
 /* ============================================================
-   RELAIS — sert d'intermédiaire sécurisé entre ton app et OpenAI.
+   RELAIS — sert d'intermédiaire sécurisé entre ton app et Groq.
    Ta clé API vit ICI (en variable d'environnement), jamais dans
    le code du site.
    ============================================================ */
@@ -15,14 +15,14 @@ app.post("/api/chat", async (req, res) => {
   try {
     const { modele, promptSysteme, messages } = req.body;
 
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
       },
       body: JSON.stringify({
-        model: modele || "gpt-4o-mini",
+        model: modele || "llama-3.3-70b-versatile",
         messages: [
           { role: "system", content: promptSysteme || "Tu es un assistant utile." },
           ...(messages || []).map(m => ({ role: m.role, content: m.contenu }))
