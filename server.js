@@ -43,6 +43,47 @@ app.post("/api/chat", async (req, res) => {
 });
 
 app.get("/", (req, res) => res.send("Relais actif ✅"));
+app.post("/api/tradingview-alert", (req, res) => {
+  const {
+    secret,
+    symbol,
+    timeframe,
+    close,
+    volume,
+    event,
+    time
+  } = req.body || {};
 
+  if (!secret || secret !== process.env.TRADINGVIEW_WEBHOOK_SECRET) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  if (!symbol  !timeframe  !close || !time) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing required market data"
+    });
+  }
+
+  const receivedAt = new Date();
+  const signal = {
+    status: "OBSERVE",
+    reason: "Alerte reçue et enregistrée. Aucune opération n’est exécutée.",
+    symbol,
+    timeframe,
+    close: Number(close),
+    volume: volume ? Number(volume) : null,
+    event: event || "unknown",
+    marketTime: time,
+    receivedAt: receivedAt.toISOString()
+  };
+
+  console.log("TradingView alert:", JSON.stringify(signal));
+
+  return res.status(200).json({
+    ok: true,
+    signal
+  });
+});
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Relais actif sur le port ${port}`));
