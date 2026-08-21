@@ -58,7 +58,7 @@ app.post("/api/tradingview-alert", (req, res) => {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
 
-  if (!symbol  !timeframe  !close || !time) {
+  if (!symbol || !timeframe  || !close || !time) {
     return res.status(400).json({
       ok: false,
       error: "Missing required market data"
