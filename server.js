@@ -85,5 +85,8 @@ app.post("/api/tradingview-alert", (req, res) => {
     signal
   });
 });
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Relais actif sur le port ${port}`));
+const port = process.env.PORT || 10000;
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Relais actif sur le port ${port}`);
+});
