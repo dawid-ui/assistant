@@ -8,85 +8,102 @@ import express from "express";
 import cors from "cors";
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
 app.post("/api/chat", async (req, res) => {
   try {
-    const { modele, promptSysteme, messages } = req.body;
+    const {
+      modele,
+      promptSysteme,
+      messages
+    } = req.body;
 
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: modele || "openai/gpt-oss-120b",
-        messages: [
-          { role: "system", content: promptSysteme || "Tu es un assistant utile." },
-          ...(messages || []).map(m => ({ role: m.role, content: m.contenu }))
-        ]
-      })
-    });
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization":
+            `Bearer ${process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: modele || "openai/gpt-oss-120b",
+          messages: [
+            {
+              role: "system",
+              content:
+                promptSysteme ||
+                "Tu es un assistant utile."
+            },
+            ...(messages || []).map((message) => ({
+              role: message.role,
+              content: message.contenu
+            }))
+          ]
+        })
+      }
+    );
 
-    if (!r.ok) {
-      const detail = await r.text();
-      return res.status(r.status).json({ erreur: detail });
+    if (!response.ok) {
+      const detail = await response.text();
+
+      return res.status(response.status).json({
+        erreur: detail
+      });
     }
 
-    const data = await r.json();
-    res.json({ reponse: data.choices[0].message.content });
-  } catch (err) {
-    res.status(500).json({ erreur: err.message });
+    const data = await response.json();
+
+    return res.json({
+      reponse:
+        data.choices?.[0]?.message?.content ||
+        "Réponse vide."
+    });
+  } catch (error) {
+    return res.status(500).json({
+      erreur: error.message
+    });
   }
 });
 
-app.get("/", (req, res) => res.send("Relais actif ✅"));
 app.post("/api/tradingview-alert", (req, res) => {
   const {
     secret,
-    symbol,
-    timeframe,
-    close,
-    volume,
-    event,
-    time
+    ...alerte
   } = req.body || {};
 
-  if (!secret || secret !== process.env.TRADINGVIEW_WEBHOOK_SECRET) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-
-  if (!symbol || !timeframe  || !close || !time) {
-    return res.status(400).json({
+  if (
+    !process.env.TRADINGVIEW_WEBHOOK_SECRET ||
+    secret !== process.env.TRADINGVIEW_WEBHOOK_SECRET
+  ) {
+    return res.status(401).json({
       ok: false,
-      error: "Missing required market data"
+      erreur: "Secret TradingView incorrect"
     });
   }
 
-  const receivedAt = new Date();
-  const signal = {
-    status: "OBSERVE",
-    reason: "Alerte reçue et enregistrée. Aucune opération n’est exécutée.",
-    symbol,
-    timeframe,
-    close: Number(close),
-    volume: volume ? Number(volume) : null,
-    event: event || "unknown",
-    marketTime: time,
-    receivedAt: receivedAt.toISOString()
-  };
+  console.log(
+    "Alerte TradingView reçue :",
+    alerte
+  );
 
-  console.log("TradingView alert:", JSON.stringify(signal));
-
-  return res.status(200).json({
+  return res.json({
     ok: true,
-    signal
+    message: "Alerte TradingView reçue"
   });
 });
+
+app.get("/", (req, res) => {
+  res.send("Relais actif ✅");
+});
+
 const port = process.env.PORT || 10000;
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`Relais actif sur le port ${port}`);
+  console.log(
+    `Relais actif sur le port ${port}`
+  );
 });
