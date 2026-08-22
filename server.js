@@ -3,10 +3,6 @@ import cors from "cors";
 
 const app = express();
 
-/* ============================================================
-   CONFIGURATION
-   ============================================================ */
-
 const port = process.env.PORT || 10000;
 
 const TRADING_MODE =
@@ -25,10 +21,6 @@ const ALERT_DEDUPLICATION_SECONDS = Math.max(
   )
 );
 
-/* ============================================================
-   MIDDLEWARE
-   ============================================================ */
-
 app.use(cors());
 
 app.use(
@@ -37,11 +29,6 @@ app.use(
   })
 );
 
-/*
-  TradingView peut envoyer du texte si le message
-  n'est pas un JSON valide.
-  On accepte donc aussi text/plain.
-*/
 app.use(
   express.text({
     type: "text/plain",
@@ -49,11 +36,13 @@ app.use(
   })
 );
 
+
 /* ============================================================
    MÉMOIRE TEMPORAIRE TRADINGVIEW
    ============================================================ */
 
 const alertesTradingView = [];
+
 
 /* ============================================================
    OUTILS
@@ -129,8 +118,9 @@ function estDoublon(alerte) {
   });
 }
 
+
 /* ============================================================
-   ROUTE PRINCIPALE DU CHAT — À CONSERVER
+   CHAT IA — À CONSERVER
    ============================================================ */
 
 app.post("/api/chat", async (req, res) => {
@@ -196,11 +186,12 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+
 /* ============================================================
    HEALTH CHECK
    ============================================================ */
 
-aapp.get("/health", (req, res) => {
+app.get("/health", (req, res) => {
   return res.json({
     ok: true,
     groqConfigured: Boolean(
@@ -212,6 +203,7 @@ aapp.get("/health", (req, res) => {
   });
 });
 
+
 /* ============================================================
    WEBHOOK TRADINGVIEW
    ============================================================ */
@@ -219,10 +211,6 @@ aapp.get("/health", (req, res) => {
 app.post("/api/tradingview-alert", (req, res) => {
   const body = normaliserBody(req.body);
 
-  /*
-    Si TradingView n'envoie pas un JSON exploitable,
-    on refuse proprement.
-  */
   if (!body) {
     return res.status(400).json({
       ok: false,
@@ -231,13 +219,9 @@ app.post("/api/tradingview-alert", (req, res) => {
   }
 
   const secretRecu = body.secret;
-
   const secretAttendu =
     process.env.TRADINGVIEW_WEBHOOK_SECRET;
 
-  /*
-    Authentification obligatoire.
-  */
   if (
     !secretAttendu ||
     secretRecu !== secretAttendu
@@ -248,15 +232,8 @@ app.post("/api/tradingview-alert", (req, res) => {
     });
   }
 
-  /*
-    IMPORTANT :
-    On ne copie PAS le secret dans l'alerte.
-  */
   const alerte = creerAlerte(body);
 
-  /*
-    Déduplication facultative.
-  */
   if (estDoublon(alerte)) {
     return res.status(200).json({
       ok: true,
@@ -264,30 +241,19 @@ app.post("/api/tradingview-alert", (req, res) => {
     });
   }
 
-  /*
-    Sauvegarde temporaire en RAM.
-  */
   ajouterAlerte(alerte);
 
-  /*
-    Ne jamais afficher le secret dans les logs.
-  */
   console.log(
     "Alerte TradingView reçue :",
     alerte
   );
 
-  /*
-    Réponse immédiate.
-    Aucun appel Groq ici.
-    Aucun ordre.
-    Aucun broker.
-  */
   return res.status(200).json({
     ok: true,
     message: "Alerte TradingView reçue"
   });
 });
+
 
 /* ============================================================
    LISTE DES ALERTES
@@ -300,8 +266,9 @@ app.get("/api/tradingview-alerts", (req, res) => {
   });
 });
 
+
 /* ============================================================
-   STATUT DU SYSTÈME
+   STATUT
    ============================================================ */
 
 app.get("/api/status", (req, res) => {
@@ -320,6 +287,7 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+
 /* ============================================================
    RACINE
    ============================================================ */
@@ -329,6 +297,7 @@ app.get("/", (req, res) => {
     "Relais assistant IA actif — mode analyse uniquement."
   );
 });
+
 
 /* ============================================================
    DÉMARRAGE
