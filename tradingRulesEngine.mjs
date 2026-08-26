@@ -1900,6 +1900,20 @@ throw new Error(
 );
 }
 const report = new AnalysisReport(this.symbol, this.timeframe);
+  // ================================================================
+// 🕯️ INTELLIGENCE DES BOUGIES & PATTERNS GRAPHIQUES
+// ================================================================
+
+const latestCandle = this.df[this.df.length - 1];
+const previousCandles = this.df.slice(0, -1);
+
+const candleAnalysis = analyzeCandle(
+  latestCandle,
+  previousCandles
+);
+
+const candlestickPatterns = detectCandlestickPatterns(this.df);
+const chartPatternAnalysis = detectChartPatterns(this.df);
 // ÃTAPE 1 â CONTEXTE
 const lastClose = this.df[this.df.length - 1].close;
 const vwapNow = this.df[this.df.length - 1].vwap;
