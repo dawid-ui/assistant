@@ -228,6 +228,752 @@ return lines.join("\n");
 // ==================================================================================
 // MOTEUR PRINCIPAL
 // ==================================================================================
+// ============================================================================
+// CANDLESTICK INTELLIGENCE — ANALYSE OBJECTIVE DES BOUGIES
+// ============================================================================
+
+function analyzeCandle(candle, previousCandles = []) {
+  if (!candle) return null;
+
+  const { open, high, low, close, volume } = candle;
+
+  const range = Math.max(high - low, Number.EPSILON);
+  const body = Math.abs(close - open);
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+
+  const bullish = close > open;
+  const bearish = close < open;
+  const bodyPct = body / range;
+  const upperWickPct = upperWick / range;
+  const lowerWickPct = lowerWick / range;
+
+  const patterns = [];
+
+  // --- DOJI ---
+  if (bodyPct <= 0.10) {
+    patterns.push({
+      name: "Doji",
+      meaning: "Indécision : aucune direction n'est confirmée par cette bougie seule."
+    });
+  }
+
+  // --- MARUBOZU ---
+  if (bodyPct >= 0.90 && upperWickPct <= 0.05 && lowerWickPct <= 0.05) {
+    patterns.push({
+      name: bullish ? "Marubozu haussier" : "Marubozu baissier",
+      meaning: "Forte domination directionnelle pendant cette période."
+    });
+  }
+
+  // --- HAMMER / SHOOTING STAR ---
+  if (bodyPct <= 0.40 && lowerWick >= body * 2 && upperWick <= body * 0.75) {
+    patterns.push({
+      name: bullish ? "Hammer potentiel" : "Hanging Man potentiel",
+      meaning: "Rejet des prix bas. La confirmation dépend du contexte et des bougies suivantes."
+    });
+  }
+
+  if (bodyPct <= 0.40 && upperWick >= body * 2 && lowerWick <= body * 0.75) {
+    patterns.push({
+      name: bullish ? "Inverted Hammer potentiel" : "Shooting Star potentiel",
+      meaning: "Rejet des prix hauts. La confirmation dépend du contexte et des bougies suivantes."
+    });
+  }
+
+  // --- TENDANCE RÉCENTE ---
+  let trend = "indéterminée";
+
+  if (previousCandles.length >= 3) {
+    const closes = previousCandles.slice(-5).map((c) => c.close);
+    const first = closes[0];
+    const last = closes[closes.length - 1];
+
+    if (last > first) trend = "haussière";
+    else if (last < first) trend = "baissière";
+    else trend = "range";
+  }
+
+  // --- VOLUME RELATIF ---
+  let volumeContext = "volume indisponible";
+
+  if (
+    Number.isFinite(volume) &&
+    previousCandles.length >= 5
+  ) {
+    const volumes = previousCandles
+      .slice(-20)
+      .map((c) => c.volume)
+      .filter(Number.isFinite);
+
+    if (volumes.length) {
+      const avgVolume =
+        volumes.reduce((sum, v) => sum + v, 0) / volumes.length;
+
+      if (volume >= avgVolume * 1.5) {
+        volumeContext = "volume nettement supérieur à la moyenne récente";
+      } else if (volume <= avgVolume * 0.6) {
+        volumeContext = "volume inférieur à la moyenne récente";
+      } else {
+        volumeContext = "volume proche de la moyenne récente";
+      }
+    }
+  }
+
+  return {
+    direction: bullish ? "haussière" : bearish ? "baissière" : "neutre",
+    open,
+    high,
+    low,
+    close,
+    range,
+    body,
+    upperWick,
+    lowerWick,
+    bodyPct,
+    patterns,
+    trendBeforeCandle: trend,
+    volumeContext,
+    limitation:
+      "Une forme de bougie seule ne constitue pas une prédiction ni une confirmation de trade."
+  };
+}
+
+
+// ============================================================================
+// PATTERNS À PLUSIEURS BOUGIES
+// ============================================================================
+
+function detectCandlestickPatterns(candles) {
+  if (!Array.isArray(candles) || candles.length < 2) {
+    return [];
+  }
+
+  const patterns = [];
+  const a = candles[candles.length - 2];
+  const b = candles[candles.length - 1];
+
+  const aBull = a.close > a.open;
+  const aBear = a.close < a.open;
+  const bBull = b.close > b.open;
+  const bBear = b.close < b.open;
+
+  // ENGULFING HAUSSIER
+  if (
+    aBear &&
+    bBull &&
+    b.open <= a.close &&
+    b.close >= a.open
+  ) {
+    patterns.push({
+      name: "Bullish Engulfing",
+      direction: "haussière",
+      confirmationRequired: true,
+      meaning:
+        "Le corps haussier recouvre le corps baissier précédent. Son importance dépend du contexte."
+    });
+  }
+
+  // ENGULFING BAISSIER
+  if (
+    aBull &&
+    bBear &&
+    b.open >= a.close &&
+    b.close <= a.open
+  ) {
+    patterns.push({
+      name: "Bearish Engulfing",
+      direction: "baissière",
+      confirmationRequired: true,
+      meaning:
+        "Le corps baissier recouvre le corps haussier précédent. Son importance dépend du contexte."
+    });
+  }
+
+  // INSIDE BAR
+  if (b.high < a.high && b.low > a.low) {
+    patterns.push({
+      name: "Inside Bar",
+      direction: "neutre",
+      confirmationRequired: true,
+      meaning:
+        "Compression de volatilité. La direction de la sortie n'est pas connue à l'avance."
+    });
+  }
+
+  // OUTSIDE BAR
+  if (b.high > a.high && b.low < a.low) {
+    patterns.push({
+      name: "Outside Bar",
+      direction: bBull ? "haussière" : bBear ? "baissière" : "neutre",
+      confirmationRequired: true,
+      meaning:
+        "Expansion de volatilité et prise des extrêmes de la bougie précédente."
+    });
+  }
+
+  return patterns;
+}
+// ============================================================================
+// CHART PATTERN INTELLIGENCE
+// Détection objective de patterns graphiques à partir de données OHLCV.
+//
+// Principe :
+// - DETECTED = critères suffisamment remplis
+// - POSSIBLE = structure ressemblante mais incomplète
+// - NON DETECTE = aucun pattern ne satisfait les critères
+//
+// Ce module ne prédit pas le futur et ne génère aucun ordre.
+// ============================================================================
+
+
+// ============================================================================
+// OUTILS
+// ============================================================================
+
+function average(values) {
+  if (!values || values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function percentageDifference(a, b) {
+  const denominator = Math.max(Math.abs(a), Math.abs(b), Number.EPSILON);
+  return Math.abs(a - b) / denominator;
+}
+
+function isBullish(candle) {
+  return candle.close > candle.open;
+}
+
+function isBearish(candle) {
+  return candle.close < candle.open;
+}
+
+
+// ============================================================================
+// DÉTECTION DES SWINGS
+// ============================================================================
+
+function findSwingPoints(candles, lookback = 3) {
+  if (!Array.isArray(candles) || candles.length < lookback * 2 + 1) {
+    return { highs: [], lows: [] };
+  }
+
+  const highs = [];
+  const lows = [];
+
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const candle = candles[i];
+
+    let isSwingHigh = true;
+    let isSwingLow = true;
+
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j === i) continue;
+
+      if (candles[j].high >= candle.high) isSwingHigh = false;
+      if (candles[j].low <= candle.low) isSwingLow = false;
+    }
+
+    if (isSwingHigh) {
+      highs.push({
+        index: i,
+        price: candle.high
+      });
+    }
+
+    if (isSwingLow) {
+      lows.push({
+        index: i,
+        price: candle.low
+      });
+    }
+  }
+
+  return { highs, lows };
+}
+
+
+// ============================================================================
+// DOUBLE TOP / DOUBLE BOTTOM
+// ============================================================================
+
+function detectDoubleTop(swings) {
+  if (swings.highs.length < 2) return null;
+
+  const points = swings.highs.slice(-2);
+  const [first, second] = points;
+
+  const similarity = percentageDifference(first.price, second.price);
+
+  if (similarity <= 0.015) {
+    return {
+      name: "Double Top",
+      family: "Reversal",
+      direction: "baissière potentielle",
+      status: "POSSIBLE",
+      confidence: "structure détectée",
+      confirmation:
+        "Une cassure confirmée du creux situé entre les deux sommets est nécessaire.",
+      invalidation:
+        "Retour durable au-dessus des sommets du pattern.",
+      points
+    };
+  }
+
+  return null;
+}
+
+function detectDoubleBottom(swings) {
+  if (swings.lows.length < 2) return null;
+
+  const points = swings.lows.slice(-2);
+  const [first, second] = points;
+
+  const similarity = percentageDifference(first.price, second.price);
+
+  if (similarity <= 0.015) {
+    return {
+      name: "Double Bottom",
+      family: "Reversal",
+      direction: "haussière potentielle",
+      status: "POSSIBLE",
+      confidence: "structure détectée",
+      confirmation:
+        "Une cassure confirmée du sommet situé entre les deux creux est nécessaire.",
+      invalidation:
+        "Retour durable sous les creux du pattern.",
+      points
+    };
+  }
+
+  return null;
+}
+
+
+// ============================================================================
+// TRIPLE TOP / TRIPLE BOTTOM
+// ============================================================================
+
+function detectTripleBottom(swings) {
+  if (swings.lows.length < 3) return null;
+
+  const points = swings.lows.slice(-3);
+  const prices = points.map((point) => point.price);
+
+  const max = Math.max(...prices);
+  const min = Math.min(...prices);
+
+  if (percentageDifference(max, min) <= 0.02) {
+    return {
+      name: "Triple Bottom",
+      family: "Reversal",
+      direction: "haussière potentielle",
+      status: "POSSIBLE",
+      confirmation: "Cassure confirmée de la résistance du pattern.",
+      invalidation: "Cassure durable sous les trois zones de creux.",
+      points
+    };
+  }
+
+  return null;
+}
+
+function detectTripleTop(swings) {
+  if (swings.highs.length < 3) return null;
+
+  const points = swings.highs.slice(-3);
+  const prices = points.map((point) => point.price);
+
+  const max = Math.max(...prices);
+  const min = Math.min(...prices);
+
+  if (percentageDifference(max, min) <= 0.02) {
+    return {
+      name: "Triple Top",
+      family: "Reversal",
+      direction: "baissière potentielle",
+      status: "POSSIBLE",
+      confirmation: "Cassure confirmée du support du pattern.",
+      invalidation: "Cassure durable au-dessus des sommets.",
+      points
+    };
+  }
+
+  return null;
+}
+
+
+// ============================================================================
+// HEAD & SHOULDERS / INVERSE HEAD & SHOULDERS
+// ============================================================================
+
+function detectHeadAndShoulders(swings) {
+  if (swings.highs.length < 3) return null;
+
+  const [left, head, right] = swings.highs.slice(-3);
+
+  const shouldersSimilar =
+    percentageDifference(left.price, right.price) <= 0.03;
+
+  const headHigher =
+    head.price > left.price && head.price > right.price;
+
+  if (shouldersSimilar && headHigher) {
+    return {
+      name: "Head & Shoulders",
+      family: "Reversal",
+      direction: "baissière potentielle",
+      status: "POSSIBLE",
+      confirmation: "Cassure confirmée de la neckline.",
+      invalidation: "Retour durable au-dessus du sommet de la tête.",
+      points: [left, head, right]
+    };
+  }
+
+  return null;
+}
+
+function detectInverseHeadAndShoulders(swings) {
+  if (swings.lows.length < 3) return null;
+
+  const [left, head, right] = swings.lows.slice(-3);
+
+  const shouldersSimilar =
+    percentageDifference(left.price, right.price) <= 0.03;
+
+  const headLower =
+    head.price < left.price && head.price < right.price;
+
+  if (shouldersSimilar && headLower) {
+    return {
+      name: "Inverse Head & Shoulders",
+      family: "Reversal",
+      direction: "haussière potentielle",
+      status: "POSSIBLE",
+      confirmation: "Cassure confirmée de la neckline.",
+      invalidation: "Retour durable sous le creux de la tête.",
+      points: [left, head, right]
+    };
+  }
+
+  return null;
+}
+
+
+// ============================================================================
+// TRIANGLES
+// ============================================================================
+
+function getSlope(first, last) {
+  const distance = last.index - first.index;
+  if (distance === 0) return 0;
+
+  return (last.price - first.price) / distance;
+}
+
+function detectTriangles(swings) {
+  const results = [];
+
+  if (swings.highs.length < 2 || swings.lows.length < 2) {
+    return results;
+  }
+
+  const highs = swings.highs.slice(-3);
+  const lows = swings.lows.slice(-3);
+
+  const highSlope = getSlope(highs[0], highs[highs.length - 1]);
+  const lowSlope = getSlope(lows[0], lows[lows.length - 1]);
+
+  const highPrices = highs.map((point) => point.price);
+  const lowPrices = lows.map((point) => point.price);
+
+  const highFlat =
+    percentageDifference(Math.max(...highPrices), Math.min(...highPrices)) <= 0.015;
+
+  const lowFlat =
+    percentageDifference(Math.max(...lowPrices), Math.min(...lowPrices)) <= 0.015;
+
+  // Ascending Triangle
+  if (highFlat && lowSlope > 0) {
+    results.push({
+      name: "Ascending Triangle",
+      family: "Continuation / Breakout",
+      direction: "haussière potentielle",
+      status: "POSSIBLE",
+      confirmation: "Cassure confirmée au-dessus de la résistance.",
+      invalidation: "Rupture durable sous la structure ascendante."
+    });
+  }
+
+  // Descending Triangle
+  if (lowFlat && highSlope < 0) {
+    results.push({
+      name: "Descending Triangle",
+      family: "Continuation / Breakout",
+      direction: "baissière potentielle",
+      status: "POSSIBLE",
+      confirmation: "Cassure confirmée sous le support.",
+      invalidation: "Rupture durable au-dessus de la structure descendante."
+    });
+  }
+
+  // Symmetrical Triangle
+  if (highSlope < 0 && lowSlope > 0) {
+    results.push({
+      name: "Symmetrical Triangle",
+      family: "Continuation / Breakout",
+      direction: "neutre avant confirmation",
+      status: "POSSIBLE",
+      confirmation: "La direction doit être déterminée par une cassure confirmée.",
+      invalidation: "Expansion de la structure dans le sens opposé."
+    });
+  }
+
+  return results;
+}
+
+
+// ============================================================================
+// RECTANGLE / RANGE
+// ============================================================================
+
+function detectRectangle(swings) {
+  if (swings.highs.length < 2 || swings.lows.length < 2) {
+    return null;
+  }
+
+  const highs = swings.highs.slice(-4).map((point) => point.price);
+  const lows = swings.lows.slice(-4).map((point) => point.price);
+
+  const highVariation =
+    percentageDifference(Math.max(...highs), Math.min(...highs));
+
+  const lowVariation =
+    percentageDifference(Math.max(...lows), Math.min(...lows));
+
+  if (highVariation <= 0.02 && lowVariation <= 0.02) {
+    return {
+      name: "Rectangle / Range",
+      family: "Consolidation",
+      direction: "neutre avant breakout",
+      status: "DETECTED",
+      confirmation:
+        "La direction future reste inconnue tant qu'une sortie confirmée n'a pas lieu.",
+      invalidation:
+        "Le pattern cesse d'être valide si les bornes ne contiennent plus le prix."
+    };
+  }
+
+  return null;
+}
+
+
+// ============================================================================
+// CHANNELS
+// ============================================================================
+
+function detectChannels(swings) {
+  const results = [];
+
+  if (swings.highs.length < 2 || swings.lows.length < 2) {
+    return results;
+  }
+
+  const highs = swings.highs.slice(-3);
+  const lows = swings.lows.slice(-3);
+
+  const highSlope = getSlope(highs[0], highs[highs.length - 1]);
+  const lowSlope = getSlope(lows[0], lows[lows.length - 1]);
+
+  // Les pentes doivent avoir la même direction.
+  if (highSlope > 0 && lowSlope > 0) {
+    results.push({
+      name: "Ascending Channel",
+      family: "Trend Channel",
+      direction: "haussière structurelle",
+      status: "POSSIBLE",
+      confirmation: "Plusieurs contacts cohérents avec les deux bornes.",
+      invalidation: "Cassure durable de la structure du canal."
+    });
+  }
+
+  if (highSlope < 0 && lowSlope < 0) {
+    results.push({
+      name: "Descending Channel",
+      family: "Trend Channel",
+      direction: "baissière structurelle",
+      status: "POSSIBLE",
+      confirmation: "Plusieurs contacts cohérents avec les deux bornes.",
+      invalidation: "Cassure durable de la structure du canal."
+    });
+  }
+
+  return results;
+}
+
+
+// ============================================================================
+// WEDGES
+// ============================================================================
+
+function detectWedges(swings) {
+  const results = [];
+
+  if (swings.highs.length < 2 || swings.lows.length < 2) {
+    return results;
+  }
+
+  const highs = swings.highs.slice(-3);
+  const lows = swings.lows.slice(-3);
+
+  const highSlope = getSlope(highs[0], highs[highs.length - 1]);
+  const lowSlope = getSlope(lows[0], lows[lows.length - 1]);
+
+  // Rising Wedge : deux lignes montantes qui convergent.
+  if (highSlope > 0 && lowSlope > 0 && lowSlope > highSlope) {
+    results.push({
+      name: "Rising Wedge",
+      family: "Wedge",
+      direction: "à confirmer",
+      status: "POSSIBLE",
+      confirmation: "La direction dépend de la sortie confirmée du wedge.",
+      invalidation: "Perte de la géométrie convergente."
+    });
+  }
+
+  // Falling Wedge : deux lignes descendantes qui convergent.
+  if (highSlope < 0 && lowSlope < 0 && highSlope > lowSlope) {
+    results.push({
+      name: "Falling Wedge",
+      family: "Wedge",
+      direction: "à confirmer",
+      status: "POSSIBLE",
+      confirmation: "La direction dépend de la sortie confirmée du wedge.",
+      invalidation: "Perte de la géométrie convergente."
+    });
+  }
+
+  return results;
+}
+
+
+// ============================================================================
+// BIBLIOTHÈQUE DES PATTERNS PRIS EN CHARGE / À ÉTENDRE
+// ============================================================================
+
+const CHART_PATTERN_LIBRARY = {
+  implemented: [
+    "Double Top",
+    "Double Bottom",
+    "Triple Top",
+    "Triple Bottom",
+    "Head & Shoulders",
+    "Inverse Head & Shoulders",
+    "Ascending Triangle",
+    "Descending Triangle",
+    "Symmetrical Triangle",
+    "Rectangle",
+    "Ascending Channel",
+    "Descending Channel",
+    "Rising Wedge",
+    "Falling Wedge"
+  ],
+
+  // Ces patterns sont prévus pour une extension spécialisée.
+  // Ils ne doivent PAS être déclarés détectés tant que leur détecteur
+  // mathématique spécifique n'est pas ajouté.
+  planned: [
+    "Bull Flag",
+    "Bear Flag",
+    "Bullish Pennant",
+    "Bearish Pennant",
+    "Megaphone / Broadening Formation",
+    "Three Drives",
+    "AB=CD",
+    "Adam & Eve",
+    "Quasimodo",
+    "Dragon Pattern",
+    "Bump and Run",
+    "Cup and Handle",
+    "Harmonic Patterns"
+  ]
+};
+
+
+// ============================================================================
+// ANALYSE PRINCIPALE DES PATTERNS
+// ============================================================================
+
+function detectChartPatterns(candles) {
+  if (!Array.isArray(candles) || candles.length < 10) {
+    return {
+      status: "INSUFFICIENT_DATA",
+      patterns: [],
+      message:
+        "Données insuffisantes pour analyser les patterns graphiques."
+    };
+  }
+
+  const swings = findSwingPoints(candles);
+  const detectedPatterns = [];
+
+  const detectors = [
+    detectDoubleTop(swings),
+    detectDoubleBottom(swings),
+    detectTripleTop(swings),
+    detectTripleBottom(swings),
+    detectHeadAndShoulders(swings),
+    detectInverseHeadAndShoulders(swings),
+    detectRectangle(swings)
+  ];
+
+  for (const result of detectors) {
+    if (result) detectedPatterns.push(result);
+  }
+
+  detectedPatterns.push(...detectTriangles(swings));
+  detectedPatterns.push(...detectChannels(swings));
+  detectedPatterns.push(...detectWedges(swings));
+
+  // Évite les doublons éventuels.
+  const uniquePatterns = [
+    ...new Map(
+      detectedPatterns.map((pattern) => [pattern.name, pattern])
+    ).values()
+  ];
+
+  if (uniquePatterns.length === 0) {
+    return {
+      status: "NO_PATTERN_DETECTED",
+      patterns: [],
+      message:
+        "Pattern non détecté : aucune structure disponible ne satisfait suffisamment les critères de la bibliothèque actuelle.",
+      availableLibrary: CHART_PATTERN_LIBRARY.implemented
+    };
+  }
+
+  return {
+    status: "PATTERN_FOUND",
+    patterns: uniquePatterns,
+    swings,
+    limitation:
+      "Un pattern détecté représente une structure observée, pas une prédiction garantie. Une confirmation contextuelle et des données suffisantes restent nécessaires."
+  };
+}
+
+
+// ============================================================================
+// EXPORTS
+// ============================================================================
+
+export {
+  analyzeCandle,
+  detectCandlestickPatterns,
+  detectChartPatterns,
+  findSwingPoints,
+  CHART_PATTERN_LIBRARY
+};
 class MarketAnalyzer {
 static REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"];
 static STRATEGIES_DISPONIBLES = [
