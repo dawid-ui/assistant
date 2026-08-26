@@ -1921,6 +1921,56 @@ const trendHint = lastClose > vwapNow ? "au-dessus du VWAP" : "sous le VWAP";
 report.contexte =
 `DerniÃ¨re clÃ´ture : ${lastClose}. Le prix Ã©volue actuellement ${trendHint} ` +
 `(VWAP = ${round(vwapNow, 5)}).`;
+  // ÉTAPE 1B — BOUGIES & PATTERNS
+
+if (candleAnalysis) {
+  const candleNames = candleAnalysis.patterns
+    .map((pattern) => pattern.name);
+
+  if (candleNames.length > 0) {
+    report.validation.push(
+      `🕯️ Bougie détectée : ${candleNames.join(", ")}.`
+    );
+  } else {
+    report.validation.push(
+      `🕯️ Dernière bougie : ${candleAnalysis.direction}, sans pattern de bougie spécifique détecté.`
+    );
+  }
+
+  report.validation.push(
+    `Contexte avant la bougie : ${candleAnalysis.trendBeforeCandle}.`
+  );
+
+  if (candleAnalysis.volumeContext) {
+    report.validation.push(
+      `Volume : ${candleAnalysis.volumeContext}.`
+    );
+  }
+}
+
+if (candlestickPatterns.length > 0) {
+  for (const pattern of candlestickPatterns) {
+    report.validation.push(
+      `🕯️ Pattern de bougies : ${pattern.name} — ${pattern.meaning}`
+    );
+  }
+}
+
+if (chartPatternAnalysis.status === "PATTERN_FOUND") {
+  for (const pattern of chartPatternAnalysis.patterns) {
+    report.validation.push(
+      `📐 Pattern graphique : ${pattern.name} (${pattern.status}) — ${pattern.direction}.`
+    );
+  }
+} else if (chartPatternAnalysis.status === "NO_PATTERN_DETECTED") {
+  report.validation.push(
+    "📐 Pattern graphique : non détecté dans la bibliothèque actuelle."
+  );
+} else if (chartPatternAnalysis.status === "INSUFFICIENT_DATA") {
+  report.limitesDonnees.push(
+    "📐 Données insuffisantes pour analyser correctement les patterns graphiques."
+  );
+}
 // ÃTAPE 2 â LIQUIDITÃ
 const swings = this._swingPoints();
 const equalLevels = this._equalLevels(swings);
