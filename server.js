@@ -11,7 +11,7 @@ const TRADING_MODE =
 
 const ALERT_MEMORY_LIMIT = Math.max(
   1,
-  Number.parseInt(process.env.ALERT_MEMORY_LIMIT || "100", 10)
+  Number.parseInt(process.env.ALERT_MEMORY_LIMIT || "50", 10)
 );
 
 const ALERT_DEDUPLICATION_SECONDS = Math.max(
