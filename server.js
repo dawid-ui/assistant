@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { MarketAnalyzer } from "./tradingRulesEngine.mjs";
 
 const app = express();
 
@@ -10,7 +11,7 @@ const TRADING_MODE =
 
 const ALERT_MEMORY_LIMIT = Math.max(
   1,
-  Number.parseInt(process.env.ALERT_MEMORY_LIMIT || "50", 10)
+  Number.parseInt(process.env.ALERT_MEMORY_LIMIT || "100", 10)
 );
 
 const ALERT_DEDUPLICATION_SECONDS = Math.max(
@@ -25,14 +26,14 @@ app.use(cors());
 
 app.use(
   express.json({
-    limit: "50kb"
+    limit: "500kb"
   })
 );
 
 app.use(
   express.text({
     type: "text/plain",
-    limit: "50kb"
+    limit: "500kb"
   })
 );
 
@@ -120,7 +121,7 @@ function estDoublon(alerte) {
 
 
 /* ============================================================
-   CHAT IA — À CONSERVER
+   CHAT IA
    ============================================================ */
 
 app.post("/api/chat", async (req, res) => {
@@ -252,6 +253,159 @@ app.post("/api/tradingview-alert", (req, res) => {
     ok: true,
     message: "Alerte TradingView reçue"
   });
+});
+
+
+/* ============================================================
+   ANALYSE DE MARCHÉ
+   AUCUN ORDRE BROKER — ANALYSE UNIQUEMENT
+   ============================================================ */
+
+app.post("/api/analyse-marche", (req, res) => {
+  try {
+    const {
+      secret,
+      symbol,
+      timeframe = "5m",
+      candles,
+      strategie = "auto",
+      entree = null,
+      stop = null,
+      objectif = null,
+      direction = null,
+      niveauPourBreakout = null,
+      directionPourBreakout = null
+    } = req.body;
+
+    const secretAttendu =
+      process.env.TRADINGVIEW_WEBHOOK_SECRET;
+
+    if (
+      !secretAttendu ||
+      secret !== secretAttendu
+    ) {
+      return res.status(401).json({
+        ok: false,
+        erreur: "Secret incorrect"
+      });
+    }
+
+    if (
+      !symbol ||
+      !Array.isArray(candles) ||
+      candles.length < 50
+    ) {
+      return res.status(400).json({
+        ok: false,
+        erreur:
+          "Il faut un symbole et au moins 50 bougies OHLCV."
+      });
+    }
+
+    const bougiesValides = candles.map((candle) => ({
+      timestamp: candle.timestamp,
+      open: Number(candle.open),
+      high: Number(candle.high),
+      low: Number(candle.low),
+      close: Number(candle.close),
+      volume: Number(candle.volume)
+    }));
+
+    const donneesInvalides = bougiesValides.some(
+      (candle) =>
+        !candle.timestamp ||
+        !Number.isFinite(candle.open) ||
+        !Number.isFinite(candle.high) ||
+        !Number.isFinite(candle.low) ||
+        !Number.isFinite(candle.close) ||
+        !Number.isFinite(candle.volume)
+    );
+
+    if (donneesInvalides) {
+      return res.status(400).json({
+        ok: false,
+        erreur:
+          "Une ou plusieurs bougies OHLCV sont invalides."
+      });
+    }
+
+    const analyseur = new MarketAnalyzer(
+      bougiesValides,
+      symbol,
+      timeframe,
+      2.0
+    );
+
+    const plan =
+      entree !== null &&
+      stop !== null &&
+      objectif !== null &&
+      direction
+        ? analyseur.buildTradePlan(
+            direction,
+            Number(entree),
+            Number(stop),
+            Number(objectif)
+          )
+        : null;
+
+    const rapport = analyseur.runFullAnalysis({
+      strategie,
+      plan,
+      niveauPourBreakout:
+        niveauPourBreakout !== null
+          ? Number(niveauPourBreakout)
+          : null,
+      directionPourBreakout
+    });
+
+    const signal =
+      rapport.verdict === "SETUP VALIDÉ"
+        ? rapport.plan?.direction === "achat"
+          ? "BUY POTENTIEL"
+          : "SELL POTENTIEL"
+        : rapport.verdict === "ATTENDRE CONFIRMATION"
+          ? "ATTENDRE CONFIRMATION"
+          : "PAS DE TRADE";
+
+    return res.json({
+      ok: true,
+      mode: "analysis_only",
+      signal,
+      verdict: rapport.verdict,
+      symbole: symbol,
+      timeframe,
+      rapport: rapport.toText(),
+
+      plan: rapport.plan
+        ? {
+            direction: rapport.plan.direction,
+            entree: rapport.plan.entree,
+            stop: rapport.plan.stop,
+            objectif: rapport.plan.objectif,
+            risqueParUnite:
+              rapport.plan.risqueParUnite,
+            gainPotentiel:
+              rapport.plan.gainPotentiel,
+            rr: rapport.plan.rr
+          }
+        : null,
+
+      avertissement:
+        "Analyse éducative uniquement. Aucun gain ni absence de perte ne peut être garanti. Aucun ordre broker n'est envoyé."
+    });
+
+  } catch (error) {
+    console.error(
+      "Erreur analyse marché :",
+      error
+    );
+
+    return res.status(500).json({
+      ok: false,
+      erreur: error.message
+    });
+  }
 });
 
 
