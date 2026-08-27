@@ -298,6 +298,15 @@ app.get("/", (req, res) => {
   );
 });
 
+app.get("/health", (req, res) => {
+  return res.json({
+    ok: true,
+    groqConfigured: Boolean(process.env.GROQ_API_KEY),
+    tradingViewConfigured: Boolean(
+      process.env.TRADINGVIEW_WEBHOOK_SECRET
+    )
+  });
+});
 
 /* ============================================================
    DÉMARRAGE
