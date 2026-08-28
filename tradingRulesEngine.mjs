@@ -1593,28 +1593,7 @@ return result;
 }
 
 
-// ⬇️ COLLE TOUT LE BLOC detectDisplacement() ICI ⬇️
 
-detectDisplacement({
-  atrPeriod = 14,
-  bodyAtrMult = 1.0,
-  bodyRangeMin = 0.60,
-  lookbackBars = 3
-} = {}) {
-  // ... tout le code du module ...
-}
-
-// ------------------------------------------------------------------------ AMD ----
-detectAmd(...) {
-// ------------------------------------------------------------------------ AMD ----
-/**
-* DÃ©tecte le cycle Accumulation â Manipulation â Distribution :
-* A) Accumulation : range serrÃ© (compression) sur `rangeWindow` bougies
-* M) Manipulation : un sweep au-delÃ  de ce range (liquidity grab)
-* D) Distribution : mouvement directionnel fort aprÃ¨s le sweep
-* Chaque phase doit Ãªtre objectivement observÃ©e ; sinon la phase est
-* marquÃ©e comme "non confirmÃ©e".
-*/
 detectAmd(rangeWindow = 30, compressionMaxPct = 0.006) {
 const df = this.df;
 const window = df.slice(-rangeWindow);
