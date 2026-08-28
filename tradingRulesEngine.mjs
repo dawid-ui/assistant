@@ -1591,9 +1591,6 @@ return result;
 result.details.push("Des poches de liquiditÃ© existent mais aucun sweep confirmÃ© par un retour Ã  l'intÃ©rieur.");
 return result;
 }
-result.details.push("Des poches de liquidité existent mais aucun sweep confirmé...");
-return result;
-}
 
 // ⬇️ COLLE TOUT LE BLOC detectDisplacement() ICI ⬇️
 
