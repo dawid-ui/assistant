@@ -1440,6 +1440,106 @@ used.add(i);
 zones.sort((a, b) => a.level - b.level);
 return zones;
 }
+ // ------------------------------------------------------------ DISPLACEMENT ----
+/**
+ * Détecte un déplacement directionnel mesurable.
+ *
+ * Un displacement n'est pas simplement une grande bougie. Le moteur recherche :
+ * 1. un corps supérieur à la volatilité normale (ATR),
+ * 2. une clôture directionnelle nette,
+ * 3. une progression récente cohérente.
+ *
+ * Le résultat décrit uniquement ce qui est observable dans les données.
+ */
+detectDisplacement({
+  atrPeriod = 14,
+  bodyAtrMult = 1.0,
+  bodyRangeMin = 0.60,
+  lookbackBars = 3
+} = {}) {
+  const df = this.df;
+
+  const result = {
+    detecte: false,
+    direction: null,
+    index: null,
+    body: null,
+    atr: null,
+    details: []
+  };
+
+  if (df.length < atrPeriod + 2) {
+    result.details.push(
+      "Historique insuffisant pour mesurer le displacement avec l'ATR."
+    );
+    return result;
+  }
+
+  const atr = this._atr(atrPeriod);
+  const start = Math.max(0, df.length - lookbackBars);
+
+  let bestCandidate = null;
+
+  for (let i = start; i < df.length; i++) {
+    const candle = df[i];
+    const candleAtr = atr[i];
+
+    if (candleAtr === null || candleAtr <= 0) continue;
+
+    const range = candle.high - candle.low;
+    const body = Math.abs(candle.close - candle.open);
+
+    if (range <= 0) continue;
+
+    const bodyRatio = body / range;
+    const direction =
+      candle.close > candle.open
+        ? "haussier"
+        : candle.close < candle.open
+          ? "baissier"
+          : null;
+
+    if (!direction) continue;
+
+    const bodyLargeEnough = body >= candleAtr * bodyAtrMult;
+    const bodyDominant = bodyRatio >= bodyRangeMin;
+
+    if (bodyLargeEnough && bodyDominant) {
+      const strength = body / candleAtr;
+
+      if (!bestCandidate || strength > bestCandidate.strength) {
+        bestCandidate = {
+          index: i,
+          direction,
+          body,
+          atr: candleAtr,
+          bodyRatio,
+          strength
+        };
+      }
+    }
+  }
+
+  if (!bestCandidate) {
+    result.details.push(
+      "Aucun displacement suffisamment fort et directionnel n'est confirmé selon les critères ATR et corps/range."
+    );
+    return result;
+  }
+
+  result.detecte = true;
+  result.direction = bestCandidate.direction;
+  result.index = bestCandidate.index;
+  result.body = bestCandidate.body;
+  result.atr = bestCandidate.atr;
+
+  result.details.push(
+    `Displacement ${bestCandidate.direction} détecté : corps de ${round(bestCandidate.body, 5)}, ` +
+    `soit ${round(bestCandidate.strength, 2)}× l'ATR, avec ${round(bestCandidate.bodyRatio * 100, 1)}% de la bougie représenté par le corps.`
+  );
+
+  return result;
+} 
 // ------------------------------------------------------------ LIQUIDITY SWEEP ----
 /**
 * Cherche un sweep de liquiditÃ© : le prix dÃ©passe briÃ¨vement un equal
