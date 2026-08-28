@@ -1591,6 +1591,23 @@ return result;
 result.details.push("Des poches de liquiditÃ© existent mais aucun sweep confirmÃ© par un retour Ã  l'intÃ©rieur.");
 return result;
 }
+result.details.push("Des poches de liquidité existent mais aucun sweep confirmé...");
+return result;
+}
+
+// ⬇️ COLLE TOUT LE BLOC detectDisplacement() ICI ⬇️
+
+detectDisplacement({
+  atrPeriod = 14,
+  bodyAtrMult = 1.0,
+  bodyRangeMin = 0.60,
+  lookbackBars = 3
+} = {}) {
+  // ... tout le code du module ...
+}
+
+// ------------------------------------------------------------------------ AMD ----
+detectAmd(...) {
 // ------------------------------------------------------------------------ AMD ----
 /**
 * DÃ©tecte le cycle Accumulation â Manipulation â Distribution :
@@ -2000,6 +2017,7 @@ throw new Error(
 );
 }
 const report = new AnalysisReport(this.symbol, this.timeframe);
+const displacement = this.detectDisplacement();  
   // ================================================================
 // 🕯️ INTELLIGENCE DES BOUGIES & PATTERNS GRAPHIQUES
 // ================================================================
