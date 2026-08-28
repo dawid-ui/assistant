@@ -452,6 +452,78 @@ app.get("/", (req, res) => {
   );
 });
 
+/* ============================================================
+   TEST ANALYSE H4 — DONNÉES DE DÉMONSTRATION
+   À SUPPRIMER OU PROTÉGER AVANT UTILISATION PUBLIQUE
+   ============================================================ */
+
+app.get("/api/test-analyse-h4", (req, res) => {
+  try {
+    const candles = [];
+    const start = new Date("2026-01-01T00:00:00Z").getTime();
+
+    let close = 1.25000;
+
+    for (let i = 0; i < 220; i++) {
+      const drift = 0.00008;
+      const noise = Math.sin(i / 7) * 0.00035;
+      const open = close;
+      close = open + drift + noise;
+
+      const high = Math.max(open, close) + 0.00025;
+      const low = Math.min(open, close) - 0.00025;
+
+      candles.push({
+        timestamp: new Date(
+          start + i * 4 * 60 * 60 * 1000
+        ).toISOString(),
+        open,
+        high,
+        low,
+        close,
+        volume: 100 + (i % 25) * 10
+      });
+    }
+
+    const analyzer = new MarketAnalyzer(
+      candles,
+      "GBPUSD",
+      "4H",
+      2.0
+    );
+
+    const lastClose = candles[candles.length - 1].close;
+
+    const plan = analyzer.buildTradePlan(
+      "achat",
+      lastClose,
+      lastClose - 0.00200,
+      lastClose + 0.00400
+    );
+
+    const report = analyzer.runFullAnalysis({
+      strategie: "auto",
+      plan
+    });
+
+    return res.json({
+      ok: true,
+      mode: "demo_only",
+      symbol: "GBPUSD",
+      timeframe: "4H",
+      candlesCount: candles.length,
+      verdict: report.verdict,
+      rapport: report.toText()
+    });
+  } catch (error) {
+    console.error("Erreur test analyse H4 :", error);
+
+    return res.status(500).json({
+      ok: false,
+      erreur: error.message
+    });
+  }
+});
 
 /* ============================================================
    DÉMARRAGE
