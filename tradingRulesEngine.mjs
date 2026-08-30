@@ -2306,6 +2306,204 @@ result.details.push("Pas de structure Ã©paule-tÃªte-Ã©paule valide sur les
 }
 return result;
 }
+// ================================================================
+// STRATÉGIE 5 — PREVIOUS DAY HIGH / LOW
+// Confirmation de liquidité : ne décide jamais seule d'un trade.
+// ================================================================
+function detectPreviousDayLiquidityConfirmation(analyzer) {
+  const df = analyzer.df;
+
+  const result = {
+    setupIdentifie: "Previous Day High / Low non confirmé",
+    source: "previous_day_liquidity",
+    direction: null,
+    confirme: false,
+    strength: 0,
+    details: []
+  };
+
+  if (!Array.isArray(df) || df.length < 2) {
+    result.details.push(
+      "Données insuffisantes pour analyser les extrêmes de la journée précédente."
+    );
+    return result;
+  }
+
+  const days = new Map();
+
+  for (const candle of df) {
+    const date = new Date(candle.timestamp);
+
+    if (Number.isNaN(date.getTime())) {
+      result.details.push(
+        "Timestamp invalide : impossible de calculer Previous Day High/Low."
+      );
+      return result;
+    }
+
+    const dayKey = date.toISOString().slice(0, 10);
+
+    if (!days.has(dayKey)) {
+      days.set(dayKey, []);
+    }
+
+    days.get(dayKey).push(candle);
+  }
+
+  const dayKeys = [...days.keys()].sort();
+
+  if (dayKeys.length < 2) {
+    result.details.push(
+      "Une seule journée disponible : Previous Day High/Low non calculable."
+    );
+    return result;
+  }
+
+  const previousDay = days.get(dayKeys[dayKeys.length - 2]);
+  const currentDay = days.get(dayKeys[dayKeys.length - 1]);
+
+  if (!previousDay?.length || !currentDay?.length) {
+    result.details.push(
+      "Historique journalier insuffisant pour confirmer une réaction."
+    );
+    return result;
+  }
+
+  const previousDayHigh = Math.max(
+    ...previousDay.map((c) => Number(c.high))
+  );
+
+  const previousDayLow = Math.min(
+    ...previousDay.map((c) => Number(c.low))
+  );
+
+  const recent = currentDay.slice(-3);
+  const last = recent[recent.length - 1];
+
+  const sweptHigh = recent.some(
+    (c) => Number(c.high) > previousDayHigh
+  );
+
+  const sweptLow = recent.some(
+    (c) => Number(c.low) < previousDayLow
+  );
+
+  if (sweptHigh && Number(last.close) < previousDayHigh) {
+    result.setupIdentifie = "PDH sweep puis rejet baissier";
+    result.direction = "baissier";
+    result.confirme = true;
+    result.strength = 1;
+    result.details.push(
+      `PDH sweepé (${round(previousDayHigh, 5)}) puis clôture revenue sous le niveau : rejet baissier observable.`
+    );
+    return result;
+  }
+
+  if (sweptLow && Number(last.close) > previousDayLow) {
+    result.setupIdentifie = "PDL sweep puis rejet haussier";
+    result.direction = "haussier";
+    result.confirme = true;
+    result.strength = 1;
+    result.details.push(
+      `PDL sweepé (${round(previousDayLow, 5)}) puis clôture revenue au-dessus du niveau : rejet haussier observable.`
+    );
+    return result;
+  }
+
+  result.details.push(
+    `PDH (${round(previousDayHigh, 5)}) et PDL (${round(previousDayLow, 5)}) calculés, mais aucune réaction de liquidité suffisamment claire n'est confirmée.`
+  );
+
+  return result;
+}
+
+
+// ================================================================
+// STRATÉGIE 7 — STRUCTURE HH/HL & LL/LH
+// Confirmation de tendance : ne décide jamais seule d'un trade.
+// ================================================================
+function detectDowStructureConfirmation(analyzer) {
+  const df = analyzer.df;
+
+  const result = {
+    setupIdentifie: "Structure de Dow non confirmée",
+    source: "dow_structure",
+    direction: null,
+    confirme: false,
+    strength: 0,
+    details: []
+  };
+
+  if (!Array.isArray(df) || df.length < 10) {
+    result.details.push(
+      "Données insuffisantes pour évaluer une structure de swings fiable."
+    );
+    return result;
+  }
+
+  const swings = analyzer._swingPoints();
+
+  const highs = swings
+    .filter((s) => s.type === "swing_high")
+    .slice(-2)
+    .map((s) => ({
+      index: s.index,
+      price: Number(df[s.index].high)
+    }));
+
+  const lows = swings
+    .filter((s) => s.type === "swing_low")
+    .slice(-2)
+    .map((s) => ({
+      index: s.index,
+      price: Number(df[s.index].low)
+    }));
+
+  if (highs.length < 2 || lows.length < 2) {
+    result.details.push(
+      "Pas assez de swing highs et swing lows pour confirmer une structure."
+    );
+    return result;
+  }
+
+  const [previousHigh, lastHigh] = highs;
+  const [previousLow, lastLow] = lows;
+
+  const higherHigh = lastHigh.price > previousHigh.price;
+  const higherLow = lastLow.price > previousLow.price;
+
+  const lowerHigh = lastHigh.price < previousHigh.price;
+  const lowerLow = lastLow.price < previousLow.price;
+
+  if (higherHigh && higherLow) {
+    result.setupIdentifie = "Structure de Dow haussière : HH + HL";
+    result.direction = "haussier";
+    result.confirme = true;
+    result.strength = 1;
+    result.details.push(
+      `Structure haussière confirmée par les swings : HH (${round(previousHigh.price, 5)} → ${round(lastHigh.price, 5)}) et HL (${round(previousLow.price, 5)} → ${round(lastLow.price, 5)}).`
+    );
+    return result;
+  }
+
+  if (lowerHigh && lowerLow) {
+    result.setupIdentifie = "Structure de Dow baissière : LH + LL";
+    result.direction = "baissier";
+    result.confirme = true;
+    result.strength = 1;
+    result.details.push(
+      `Structure baissière confirmée par les swings : LH (${round(previousHigh.price, 5)} → ${round(lastHigh.price, 5)}) et LL (${round(previousLow.price, 5)} → ${round(lastLow.price, 5)}).`
+    );
+    return result;
+  }
+
+  result.details.push(
+    "Les derniers swings ne forment pas une structure HH/HL ou LL/LH suffisamment cohérente : aucun vote directionnel supplémentaire."
+  );
+
+  return result;
+}
+
 // Pour activer l'exemple ci-dessus sur un analyzer donnÃ© :
 // analyzer.registerStrategy("head_and_shoulders", exempleDetecteurHeadAndShoulders);
 // analyzer.runFullAnalysis({strategie: "head_and_shoulders"});
@@ -2350,4 +2548,6 @@ TradePlan,
 AnalysisReport,
 MarketAnalyzer,
 exempleDetecteurHeadAndShoulders,
+detectPreviousDayLiquidityConfirmation,
+detectDowStructureConfirmation
 };
