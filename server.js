@@ -1,7 +1,10 @@
 import express from "express";
 import cors from "cors";
-import { MarketAnalyzer } from "./tradingRulesEngine.mjs";
-
+import {
+  MarketAnalyzer,
+  detectPreviousDayLiquidityConfirmation,
+  detectDowStructureConfirmation
+} from "./tradingRulesEngine.mjs";
 const app = express();
 
 const port = process.env.PORT || 10000;
@@ -335,6 +338,15 @@ app.post("/api/analyse-marche", (req, res) => {
       timeframe,
       2.0
     );
+    analyseur.registerStrategy(
+  "previous_day_liquidity",
+  detectPreviousDayLiquidityConfirmation
+);
+
+analyseur.registerStrategy(
+  "dow_structure",
+  detectDowStructureConfirmation
+);
 
     const plan =
       entree !== null &&
