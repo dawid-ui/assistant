@@ -497,12 +497,22 @@ app.get("/api/test-analyse-h4", (req, res) => {
       });
     }
 
-    const analyzer = new MarketAnalyzer(
-      candles,
-      "GBPUSD",
-      "4H",
-      2.0
-    );
+   const analyzer = new MarketAnalyzer(
+  candles,
+  "GBPUSD",
+  "4H",
+  2.0
+);
+
+analyzer.registerStrategy(
+  "previous_day_liquidity",
+  detectPreviousDayLiquidityConfirmation
+);
+
+analyzer.registerStrategy(
+  "dow_structure",
+  detectDowStructureConfirmation
+);
 
     const lastClose = candles[candles.length - 1].close;
 
@@ -568,6 +578,15 @@ app.get("/api/test-previous-day-liquidity", (req, res) => {
     }
 
     const analyzer = new MarketAnalyzer(candles, "GBPUSD", "4H", 2.0);
+    analyzer.registerStrategy(
+  "previous_day_liquidity",
+  detectPreviousDayLiquidityConfirmation
+);
+
+analyzer.registerStrategy(
+  "dow_structure",
+  detectDowStructureConfirmation
+);
     const lastClose = candles[candles.length - 1].close;
 
     const plan = analyzer.buildTradePlan(
@@ -638,6 +657,15 @@ app.get("/api/test-dow-structure", (req, res) => {
     }
 
     const analyzer = new MarketAnalyzer(candles, "GBPUSD", "4H", 2.0);
+    analyzer.registerStrategy(
+  "previous_day_liquidity",
+  detectPreviousDayLiquidityConfirmation
+);
+
+analyzer.registerStrategy(
+  "dow_structure",
+  detectDowStructureConfirmation
+);
     const lastClose = candles[candles.length - 1].close;
 
     const plan = analyzer.buildTradePlan(
