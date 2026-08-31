@@ -692,6 +692,9 @@ analyzer.registerStrategy(
       verdict: report.verdict,
       rapport: report.toText()
     });
+ app.get("/api/test-dow-structure", (req, res) => {
+  try {
+    /* ... ton code de test ici ... */
   } catch (error) {
     console.error("Erreur test dow structure:", error);
 
@@ -703,7 +706,6 @@ analyzer.registerStrategy(
     });
   }
 });
-
 /* ============================================================
    DÉMARRAGE
    ============================================================ */
