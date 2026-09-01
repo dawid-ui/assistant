@@ -520,7 +520,6 @@ app.get("/api/alpaca-paper-status", async (req, res) => {
 
 
 
-Dit moi je m’apprête a connecter mon broker à mon bot , ce code je le cole dans quel ligne dans server je demande ici l nombre 
 /* ============================================================
    TEST ANALYSE H4 — DONNÉES DE DÉMONSTRATION
    À SUPPRIMER OU PROTÉGER AVANT UTILISATION PUBLIQUE
