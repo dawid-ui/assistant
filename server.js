@@ -477,7 +477,7 @@ app.get("/api/alpaca-paper-status", async (req, res) => {
       });
     }
 
-    if (baseUrl !== "https://paper-api.alpaca.markets") {
+    if (baseUrl !== "https://paper-api.alpaca.markets/v2") {
       return res.status(500).json({
         ok: false,
         erreur: "Sécurité : APCA_API_BASE_URL doit être https://paper-api.alpaca.markets."
