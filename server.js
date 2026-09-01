@@ -528,12 +528,20 @@ app.get("/api/alpaca-paper-preview", (req, res) => {
   const action = String(req.query.action || "buy").toLowerCase();
   const qty = Number(req.query.qty || 1);
 
-  const baseUrl = process.env.APCA_API_BASE_URL;
+  const baseUrl = String(
+    process.env.APCA_API_BASE_URL || ""
+  ).replace(/\/$/, "");
+
+  const paperUrlsAllowed = [
+    "https://paper-api.alpaca.markets",
+    "https://paper-api.alpaca.markets/v2"
+  ];
+
   const hasApiKey = Boolean(process.env.ALPACA_API_KEY);
   const hasSecretKey = Boolean(process.env.ALPACA_SECRET_KEY);
 
   const checks = {
-    paperUrl: baseUrl === "https://paper-api.alpaca.markets",
+    paperUrl: paperUrlsAllowed.includes(baseUrl),
     apiKeyConfigured: hasApiKey,
     secretConfigured: hasSecretKey,
     symbolAllowed: allowedSymbols.includes(symbol),
@@ -547,6 +555,7 @@ app.get("/api/alpaca-paper-preview", (req, res) => {
     ok: accepted,
     mode: "preview_only",
     ordreSeraitEnvoye: false,
+    alpacaEndpointConfigure: baseUrl || null,
     ordrePropose: {
       symbol,
       side: action,
@@ -560,9 +569,6 @@ app.get("/api/alpaca-paper-preview", (req, res) => {
       : "Prévisualisation refusée : vérifie les contrôles."
   });
 });
-
-
-
 
 /* ============================================================
    TEST ANALYSE H4 — DONNÉES DE DÉMONSTRATION
