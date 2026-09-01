@@ -464,6 +464,63 @@ app.get("/", (req, res) => {
   );
 });
 
+app.get("/api/alpaca-paper-status", async (req, res) => {
+  try {
+    const apiKey = process.env.ALPACA_API_KEY;
+    const secretKey = process.env.ALPACA_SECRET_KEY;
+    const baseUrl = process.env.APCA_API_BASE_URL;
+
+    if (!apiKey || !secretKey) {
+      return res.status(500).json({
+        ok: false,
+        erreur: "Clés Alpaca Paper absentes dans Render."
+      });
+    }
+
+    if (baseUrl !== "https://paper-api.alpaca.markets") {
+      return res.status(500).json({
+        ok: false,
+        erreur: "Sécurité : APCA_API_BASE_URL doit être https://paper-api.alpaca.markets."
+      });
+    }
+
+    const response = await fetch(`${baseUrl}/v2/account`, {
+      headers: {
+        "APCA-API-KEY-ID": apiKey,
+        "APCA-API-SECRET-KEY": secretKey
+      }
+    });
+
+    const account = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        ok: false,
+        erreur: account.message || "Connexion Alpaca refusée."
+      });
+    }
+
+    return res.json({
+      ok: true,
+      mode: "paper_only",
+      statut: account.status,
+      devise: account.currency,
+      solde: account.cash,
+      valeurPortefeuille: account.portfolio_value,
+      pouvoirAchat: account.buying_power
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      erreur: error.message
+    });
+  }
+});
+
+
+
+
+Dit moi je m’apprête a connecter mon broker à mon bot , ce code je le cole dans quel ligne dans server je demande ici l nombre 
 /* ============================================================
    TEST ANALYSE H4 — DONNÉES DE DÉMONSTRATION
    À SUPPRIMER OU PROTÉGER AVANT UTILISATION PUBLIQUE
