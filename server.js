@@ -517,6 +517,50 @@ app.get("/api/alpaca-paper-status", async (req, res) => {
   }
 });
 
+/* ============================================================
+PRÉVISUALISATION ALPACA PAPER
+AUCUN ORDRE N'EST ENVOYÉ
+============================================================ */
+
+app.get("/api/alpaca-paper-preview", (req, res) => {
+  const allowedSymbols = ["AAPL", "MSFT", "SPY"];
+  const symbol = String(req.query.symbol || "AAPL").toUpperCase();
+  const action = String(req.query.action || "buy").toLowerCase();
+  const qty = Number(req.query.qty || 1);
+
+  const baseUrl = process.env.APCA_API_BASE_URL;
+  const hasApiKey = Boolean(process.env.ALPACA_API_KEY);
+  const hasSecretKey = Boolean(process.env.ALPACA_SECRET_KEY);
+
+  const checks = {
+    paperUrl: baseUrl === "https://paper-api.alpaca.markets",
+    apiKeyConfigured: hasApiKey,
+    secretConfigured: hasSecretKey,
+    symbolAllowed: allowedSymbols.includes(symbol),
+    actionAllowed: ["buy", "sell"].includes(action),
+    quantityAllowed: Number.isInteger(qty) && qty === 1
+  };
+
+  const accepted = Object.values(checks).every(Boolean);
+
+  return res.json({
+    ok: accepted,
+    mode: "preview_only",
+    ordreSeraitEnvoye: false,
+    ordrePropose: {
+      symbol,
+      side: action,
+      qty,
+      type: "market",
+      time_in_force: "day"
+    },
+    controles: checks,
+    message: accepted
+      ? "Prévisualisation acceptée : aucun ordre n'a été envoyé."
+      : "Prévisualisation refusée : vérifie les contrôles."
+  });
+});
+
 
 
 
