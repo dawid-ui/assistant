@@ -6,7 +6,7 @@ import {
   LIVE_TRADING_UNLOCKED,
   LIVE_TRADING_CONFIRMATION_PHRASE,
   CONFIRMATION_TOKEN_TTL_MS
-} from "./config.mjs";
+} from "./config.js";
 import { riskManager } from "./riskManager.js";
 import * as broker from "./brokerAdapter.js";
 
