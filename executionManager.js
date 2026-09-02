@@ -7,8 +7,8 @@ import {
   LIVE_TRADING_CONFIRMATION_PHRASE,
   CONFIRMATION_TOKEN_TTL_MS
 } from "./config.mjs";
-import { riskManager } from "./riskManager.mjs";
-import * as broker from "./brokerAdapter.mjs";
+import { riskManager } from "./riskManager.js";
+import * as broker from "./brokerAdapter.js";
 
 /**
  * ==================================================================================
