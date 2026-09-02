@@ -4,13 +4,20 @@ import {
   MarketAnalyzer,
   detectPreviousDayLiquidityConfirmation,
   detectDowStructureConfirmation
-} from "./tradingRulesEngine.mjs";
+} from "./tradingRulesEngine.js";
+import {
+  TRADING_MODE,
+  TRADING_MODES,
+  ALLOWED_SYMBOLS,
+  MAX_TRADES_PER_SESSION
+} from "./config.js";
+import { riskManager } from "./riskManager.js";
+import * as executionManager from "./executionManager.js";
+import * as broker from "./brokerAdapter.js";
+
 const app = express();
 
 const port = process.env.PORT || 10000;
-
-const TRADING_MODE =
-  process.env.TRADING_MODE || "analysis_only";
 
 const ALERT_MEMORY_LIMIT = Math.max(
   1,
@@ -237,6 +244,13 @@ app.post("/api/tradingview-alert", (req, res) => {
   }
 
   const alerte = creerAlerte(body);
+  alerte.utilisablePourExecution = alerte.action !== "test";
+
+  if (!alerte.utilisablePourExecution) {
+    console.log(
+      "Alerte TradingView reçue avec action=test : marquée non-exécutable."
+    );
+  }
 
   if (estDoublon(alerte)) {
     return res.status(200).json({
@@ -811,6 +825,211 @@ analyzer.registerStrategy(
   }
 });
 /* ============================================================
+   RISK STATUS — lecture seule, aucun ordre
+   ============================================================ */
+
+app.get("/api/risk-status", async (req, res) => {
+  try {
+    const mode = String(req.query.mode || "paper").toLowerCase();
+    if (!["paper", "live"].includes(mode)) {
+      return res.status(400).json({
+        ok: false,
+        erreur: 'mode doit être "paper" ou "live".'
+      });
+    }
+    const statut = await riskManager.statut(mode);
+    return res.json({ ok: true, ...statut });
+  } catch (error) {
+    return res.status(500).json({ ok: false, erreur: error.message });
+  }
+});
+
+
+/* ============================================================
+   STATUT ALPACA LIVE — vérifie uniquement les verrous, n'envoie rien
+   ============================================================ */
+
+app.get("/api/alpaca-live-status", (req, res) => {
+  const verrous = {
+    modeServeurEstLive: TRADING_MODE === TRADING_MODES.LIVE_EXECUTE,
+    liveDeverrouille: process.env.LIVE_TRADING_UNLOCKED === "true",
+    phraseConfirmationConfiguree: Boolean(
+      process.env.LIVE_TRADING_CONFIRMATION_PHRASE
+    )
+  };
+
+  let credentialsOk = false;
+  let credentialsErreur = null;
+  try {
+    broker.getCredentials("live");
+    credentialsOk = true;
+  } catch (error) {
+    credentialsErreur = error.message;
+  }
+
+  verrous.credentialsLiveValides = credentialsOk;
+
+  const pretPourLive = Object.values(verrous).every(Boolean);
+
+  return res.json({
+    ok: true,
+    pretPourLive,
+    verrous,
+    erreur: credentialsErreur,
+    message: pretPourLive
+      ? "Tous les verrous Live sont levés — le mode Live peut être activé volontairement."
+      : "Le mode Live reste bloqué (c'est le comportement attendu par défaut)."
+  });
+});
+
+
+/* ============================================================
+   APERÇU D'ORDRE — étape 1/2, N'ENVOIE JAMAIS D'ORDRE
+   ============================================================ */
+
+app.post("/api/trade-preview", async (req, res) => {
+  try {
+    const {
+      secret,
+      symbol,
+      side,
+      qty,
+      orderType = "market",
+      timeInForce = "day",
+      entree = null,
+      stop = null,
+      objectif = null,
+      direction = null,
+      strategie = null
+    } = req.body || {};
+
+    const secretAttendu = process.env.TRADINGVIEW_WEBHOOK_SECRET;
+    if (!secretAttendu || secret !== secretAttendu) {
+      return res.status(401).json({ ok: false, erreur: "Secret incorrect" });
+    }
+
+    let plan = null;
+    if (entree !== null && stop !== null && objectif !== null && direction) {
+      const risqueParUnite = Math.abs(Number(entree) - Number(stop));
+      const gainPotentiel = Math.abs(Number(objectif) - Number(entree));
+      plan = {
+        direction,
+        entree: Number(entree),
+        stop: Number(stop),
+        objectif: Number(objectif),
+        risqueParUnite,
+        rr: risqueParUnite ? round2(gainPotentiel / risqueParUnite) : null
+      };
+    }
+
+    const apercu = await executionManager.construireApercu({
+      symbol,
+      side,
+      qty: Number(qty),
+      orderType,
+      timeInForce,
+      plan,
+      strategie,
+      signalKey: `${symbol}-${side}-${strategie || "manuel"}`
+    });
+
+    return res.json(apercu);
+  } catch (error) {
+    console.error("Erreur trade-preview :", error);
+    return res.status(500).json({ ok: false, erreur: error.message });
+  }
+});
+
+function round2(n) {
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+
+
+/* ============================================================
+   CONFIRMATION D'ORDRE — étape 2/2, SEUL POINT D'ENVOI RÉEL
+   ============================================================ */
+
+app.post("/api/trade-confirm", async (req, res) => {
+  try {
+    const {
+      secret,
+      confirmationToken,
+      confirm,
+      liveConfirmationPhrase = null
+    } = req.body || {};
+
+    const secretAttendu = process.env.TRADINGVIEW_WEBHOOK_SECRET;
+    if (!secretAttendu || secret !== secretAttendu) {
+      return res.status(401).json({ ok: false, erreur: "Secret incorrect" });
+    }
+
+    const resultat = await executionManager.confirmerEtExecuter({
+      confirmationToken,
+      confirm,
+      liveConfirmationPhrase
+    });
+
+    return res.status(resultat.ok ? 200 : 400).json(resultat);
+  } catch (error) {
+    console.error("Erreur trade-confirm :", error);
+    return res.status(500).json({ ok: false, erreur: error.message });
+  }
+});
+
+
+/* ============================================================
+   TESTS DE PROTECTION — validation uniquement, aucun ordre, aucun
+   impact sur l'état de risque persisté (jamais de confirmerEtExecuter)
+   ============================================================ */
+
+app.get("/api/test-protections", async (req, res) => {
+  const scenarios = [
+    {
+      nom: "symbole interdit",
+      params: { symbol: "TSLA", side: "buy", qty: 1 }
+    },
+    {
+      nom: "side invalide",
+      params: { symbol: ALLOWED_SYMBOLS[0], side: "hold", qty: 1 }
+    },
+    {
+      nom: "quantité invalide (0)",
+      params: { symbol: ALLOWED_SYMBOLS[0], side: "buy", qty: 0 }
+    },
+    {
+      nom: "quantité invalide (décimale)",
+      params: { symbol: ALLOWED_SYMBOLS[0], side: "buy", qty: 1.5 }
+    }
+  ];
+
+  const resultats = [];
+  for (const scenario of scenarios) {
+    const apercu = await executionManager.construireApercu(scenario.params);
+    resultats.push({
+      scenario: scenario.nom,
+      refuseCommeAttendu: apercu.accepte === false,
+      raisons: apercu.raisons
+    });
+  }
+
+  const statutPaper = await riskManager.statut("paper");
+  const statutLive = await riskManager.statut("live");
+
+  return res.json({
+    ok: true,
+    message:
+      "Ces scénarios doivent tous afficher refuseCommeAttendu = true. " +
+      "Le secret incorrect et l'URL broker invalide sont couverts par " +
+      "/api/tradingview-alert et /api/alpaca-paper-status / /api/alpaca-live-status.",
+    resultats,
+    limiteTradesSession: MAX_TRADES_PER_SESSION,
+    statutPaper,
+    statutLive
+  });
+});
+
+
+/* ============================================================
    DÉMARRAGE
    ============================================================ */
 
@@ -829,5 +1048,13 @@ app.listen(port, "0.0.0.0", () => {
 
   console.log(
     `Déduplication : ${ALERT_DEDUPLICATION_SECONDS}s`
+  );
+
+  console.log(
+    `Symboles autorisés : ${ALLOWED_SYMBOLS.join(", ")}`
+  );
+
+  console.log(
+    `Limite de trades/session : ${MAX_TRADES_PER_SESSION}`
   );
 });
