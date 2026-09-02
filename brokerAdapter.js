@@ -1,4 +1,4 @@
-import { ALPACA_PAPER_BASE_URL, ALPACA_LIVE_BASE_URL } from "./config.mjs";
+import { ALPACA_PAPER_BASE_URL, ALPACA_LIVE_BASE_URL } from "./config.js";
 
 /**
  * ==================================================================================
