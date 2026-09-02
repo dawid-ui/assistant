@@ -14,7 +14,7 @@ import {
 import { riskManager } from "./riskManager.js";
 import * as executionManager from "./executionManager.js";
 import * as broker from "./brokerAdapter.js";
-
+import { getMarketBars } from "./marketDataAdapter.js";
 const app = express();
 
 const port = process.env.PORT || 10000;
@@ -129,6 +129,93 @@ function estDoublon(alerte) {
     );
   });
 }
+/* ============================================================
+   ANALYSE AUTOMATIQUE TRADINGVIEW
+   AUCUN ORDRE BROKER
+   ============================================================ */
+
+function construireDecision(alerte, rapport) {
+  const plan = rapport.plan || null;
+
+  const signal =
+    rapport.verdict === "SETUP VALIDÉ"
+      ? plan?.direction === "achat"
+        ? "BUY"
+        : plan?.direction === "vente"
+          ? "SELL"
+          : "SETUP VALIDÉ"
+      : rapport.verdict === "ATTENDRE CONFIRMATION"
+        ? "ATTENDRE CONFIRMATION"
+        : "PAS DE TRADE";
+
+  return {
+    id: crypto.randomUUID(),
+    symbol: alerte.symbol,
+    exchange: alerte.exchange,
+    timeframe: alerte.timeframe,
+    signal,
+    verdict: rapport.verdict,
+    motif: rapport.toText(),
+    entree: plan?.entree ?? null,
+    stop: plan?.stop ?? null,
+    objectif: plan?.objectif ?? null,
+    rr: plan?.rr ?? null,
+    heure: new Date().toISOString(),
+    mode: "analysis_only",
+    ordreEnvoye: false
+  };
+}
+
+
+async function analyserAlerteTradingView(alerte) {
+  const symbol = String(alerte.symbol || "").trim().toUpperCase();
+  const exchange = String(alerte.exchange || "").trim().toUpperCase();
+  const timeframe = String(alerte.timeframe || "").trim();
+
+  if (!symbol || !exchange || !timeframe) {
+    throw new Error(
+      "Alerte TradingView incomplète."
+    );
+  }
+
+  const bougies = await getMarketBars({
+    symbol,
+    exchange,
+    timeframe,
+    limit: 100
+  });
+
+  const analyseur = new MarketAnalyzer(
+    bougies,
+    symbol,
+    timeframe,
+    2.0
+  );
+
+  analyseur.registerStrategy(
+    "previous_day_liquidity",
+    detectPreviousDayLiquidityConfirmation
+  );
+
+  analyseur.registerStrategy(
+    "dow_structure",
+    detectDowStructureConfirmation
+  );
+
+  const rapport = analyseur.runFullAnalysis({
+    strategie: "auto",
+    plan: null
+  });
+
+  const decision = construireDecision(
+    alerte,
+    rapport
+  );
+
+  derniereDecision = decision;
+
+  return decision;
+}
 
 
 /* ============================================================
@@ -142,6 +229,49 @@ app.post("/api/chat", async (req, res) => {
       promptSysteme,
       messages
     } = req.body;
+   const dernierMessage =
+  Array.isArray(messages) && messages.length > 0
+    ? String(messages[messages.length - 1]?.contenu || "")
+    : "";
+
+const demandeDecision =
+  /derni[eè]re d[eé]cision|d[eé]cision render|signal actuel|dernier signal|que dit render|quel est mon signal/i
+    .test(dernierMessage);
+
+if (demandeDecision) {
+  if (!derniereDecision) {
+    return res.json({
+      reponse:
+        "Aucune décision Render disponible pour le moment. J’attends la prochaine alerte TradingView."
+    });
+  }
+
+  const d = derniereDecision;
+
+  return res.json({
+    reponse: [
+      `Décision Render — ${d.symbol} (${d.timeframe})`,
+      `Signal : ${d.signal}`,
+      `Verdict : ${d.verdict}`,
+      d.entree !== null
+        ? `Entrée : ${d.entree}`
+        : null,
+      d.stop !== null
+        ? `Stop-loss : ${d.stop}`
+        : null,
+      d.objectif !== null
+        ? `Objectif : ${d.objectif}`
+        : null,
+      d.rr !== null
+        ? `RR : ${d.rr}`
+        : null,
+      `Heure : ${d.heure}`,
+      "Statut : Analyse uniquement — aucun ordre n’a été envoyé."
+    ]
+      .filter(Boolean)
+      .join("\n")
+  });
+} 
 
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -220,7 +350,7 @@ app.get("/health", (req, res) => {
    WEBHOOK TRADINGVIEW
    ============================================================ */
 
-app.post("/api/tradingview-alert", (req, res) => {
+app.post("/api/tradingview-alert", async (req, res) => {
   const body = normaliserBody(req.body);
 
   if (!body) {
@@ -245,7 +375,10 @@ app.post("/api/tradingview-alert", (req, res) => {
   }
 
   const alerte = creerAlerte(body);
-  alerte.utilisablePourExecution = alerte.action !== "test";
+
+  // TEST = toujours non exécutable
+  alerte.utilisablePourExecution =
+    alerte.action !== "test";
 
   if (!alerte.utilisablePourExecution) {
     console.log(
@@ -262,15 +395,30 @@ app.post("/api/tradingview-alert", (req, res) => {
 
   ajouterAlerte(alerte);
 
-  console.log(
-    "Alerte TradingView reçue :",
-    alerte
-  );
+  try {
+    const decision =
+      await analyserAlerteTradingView(alerte);
 
-  return res.status(200).json({
-    ok: true,
-    message: "Alerte TradingView reçue"
-  });
+    return res.status(200).json({
+      ok: true,
+      message: "Alerte TradingView reçue et analysée",
+      alerte,
+      decision
+    });
+  } catch (error) {
+    console.error(
+      "Erreur analyse TradingView :",
+      error.message
+    );
+
+    return res.status(200).json({
+      ok: true,
+      message:
+        "Alerte TradingView reçue, mais analyse indisponible",
+      alerte,
+      analyseDisponible: false
+    });
+  }
 });
 
 
@@ -433,6 +581,42 @@ analyseur.registerStrategy(
       erreur: error.message
     });
   }
+});
+/* ============================================================
+   DERNIÈRE DÉCISION RENDER
+   LECTURE SEULE
+   ============================================================ */
+
+app.get("/api/latest-decision", (req, res) => {
+  const symbolDemande = req.query.symbol
+    ? String(req.query.symbol).trim().toUpperCase()
+    : null;
+
+  if (!derniereDecision) {
+    return res.json({
+      ok: true,
+      decision: null,
+      message:
+        "Aucune décision Render disponible pour le moment."
+    });
+  }
+
+  if (
+    symbolDemande &&
+    derniereDecision.symbol !== symbolDemande
+  ) {
+    return res.json({
+      ok: true,
+      decision: null,
+      message:
+        `Aucune décision Render disponible pour ${symbolDemande}.`
+    });
+  }
+
+  return res.json({
+    ok: true,
+    decision: derniereDecision
+  });
 });
 
 
