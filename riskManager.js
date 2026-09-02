@@ -5,7 +5,7 @@ import {
   MAX_PERTE_QUOTIDIENNE_USD,
   RR_MINIMUM,
   RISK_STATE_FILE
-} from "./config.mjs";
+} from "./config.js";
 
 /**
  * ==================================================================================
