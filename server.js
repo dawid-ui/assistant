@@ -18,6 +18,7 @@ import * as broker from "./brokerAdapter.js";
 const app = express();
 
 const port = process.env.PORT || 10000;
+let derniereDecision = null;
 
 const ALERT_MEMORY_LIMIT = Math.max(
   1,
