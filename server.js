@@ -445,7 +445,7 @@ app.post("/api/tradingview-alert", async (req, res) => {
 
   ajouterAlerte(alerte);
 
-  try {
+  
   void analyserAlerteTradingView(alerte)
     .then((decision) => {
       console.log(
