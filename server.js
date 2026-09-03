@@ -150,6 +150,7 @@ function construireDecision(alerte, rapport) {
 
   return {
     id: crypto.randomUUID(),
+    alerteTest: alerte.action === "test",
     symbol: alerte.symbol,
     exchange: alerte.exchange,
     timeframe: alerte.timeframe,
@@ -273,54 +274,103 @@ if (demandeDecision) {
   });
 } 
 
-    const response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
+        let data;
 
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization":
-            `Bearer ${process.env.GROQ_API_KEY}`
-        },
+    try {
+      const response = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization":
+              `Bearer ${process.env.GROQ_API_KEY}`
+          },
+          body: JSON.stringify({
+            model:
+              modele || "openai/gpt-oss-120b",
+            messages: [
+              {
+                role: "system",
+                content:
+                  promptSysteme ||
+                  "Tu es un assistant utile."
+              },
+              ...(messages || []).map((message) => ({
+                role: message.role,
+                content: message.contenu
+              }))
+            ]
+          })
+        }
+      );
 
-        body: JSON.stringify({
-          model:
-            modele || "openai/gpt-oss-120b",
-
-          messages: [
-            {
-              role: "system",
-              content:
-                promptSysteme ||
-                "Tu es un assistant utile."
-            },
-
-            ...(messages || []).map((message) => ({
-              role: message.role,
-              content: message.contenu
-            }))
-          ]
-        })
+      if (!response.ok) {
+        throw new Error(
+          `Groq indisponible (${response.status})`
+        );
       }
-    );
 
-    if (!response.ok) {
-      const detail = await response.text();
+      data = await response.json();
 
-      return res.status(response.status).json({
-        erreur: detail
-      });
+    } catch (groqError) {
+      console.error(
+        "Groq indisponible, tentative NVIDIA NIM :",
+        groqError.message
+      );
+
+      if (!process.env.NVIDIA_API_KEY) {
+        return res.status(500).json({
+          erreur:
+            "Groq indisponible et NVIDIA_API_KEY absente."
+        });
+      }
+
+      const responseNvidia = await fetch(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization":
+              `Bearer ${process.env.NVIDIA_API_KEY}`
+          },
+          body: JSON.stringify({
+            model:
+              "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+            messages: [
+              {
+                role: "system",
+                content:
+                  promptSysteme ||
+                  "Tu es un assistant utile."
+              },
+              ...(messages || []).map((message) => ({
+                role: message.role,
+                content: message.contenu
+              }))
+            ]
+          })
+        }
+      );
+
+      if (!responseNvidia.ok) {
+        const detail = await responseNvidia.text();
+
+        return res.status(responseNvidia.status).json({
+          erreur:
+            `Groq et NVIDIA NIM indisponibles : ${detail}`
+        });
+      }
+
+      data = await responseNvidia.json();
     }
-
-    const data = await response.json();
 
     return res.json({
       reponse:
         data.choices?.[0]?.message?.content ||
         "Réponse vide."
     });
-
   } catch (error) {
     return res.status(500).json({
       erreur: error.message
@@ -396,29 +446,25 @@ app.post("/api/tradingview-alert", async (req, res) => {
   ajouterAlerte(alerte);
 
   try {
-    const decision =
-      await analyserAlerteTradingView(alerte);
-
-    return res.status(200).json({
-      ok: true,
-      message: "Alerte TradingView reçue et analysée",
-      alerte,
-      decision
+  void analyserAlerteTradingView(alerte)
+    .then((decision) => {
+      console.log(
+        `Décision Render créée : ${decision.signal} — ${decision.symbol}`
+      );
+    })
+    .catch((error) => {
+      console.error(
+        "Erreur analyse TradingView :",
+        error.message
+      );
     });
-  } catch (error) {
-    console.error(
-      "Erreur analyse TradingView :",
-      error.message
-    );
 
-    return res.status(200).json({
-      ok: true,
-      message:
-        "Alerte TradingView reçue, mais analyse indisponible",
-      alerte,
-      analyseDisponible: false
-    });
-  }
+  return res.status(200).json({
+    ok: true,
+    message:
+      "Alerte TradingView reçue, analyse lancée.",
+    alerte
+  });
 });
 
 
