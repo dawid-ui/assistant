@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import express from "express";
 import cors from "cors";
 import {
@@ -149,7 +150,7 @@ function construireDecision(alerte, rapport) {
         : "PAS DE TRADE";
 
   return {
-    id: crypto.randomUUID(),
+    import crypto from "node:crypto";
     alerteTest: alerte.action === "test",
     symbol: alerte.symbol,
     exchange: alerte.exchange,
