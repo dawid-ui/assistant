@@ -150,7 +150,7 @@ function construireDecision(alerte, rapport) {
         : "PAS DE TRADE";
 
   return {
-    import crypto from "node:crypto";
+    id: crypto.randomUUID(),
     alerteTest: alerte.action === "test",
     symbol: alerte.symbol,
     exchange: alerte.exchange,
