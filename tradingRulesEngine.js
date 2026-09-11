@@ -982,6 +982,15 @@ static STRATEGIES_DISPONIBLES = [
 "fair_value_gap", "liquidity_run_sweep", "orb", "double_top_bottom",
 "rsi_divergence", "auto",
 ];
+// ================================================================
+// ARBITRAGE — seuils et bonus (voir runArbitratedAnalysis plus bas)
+// ================================================================
+/** Seuil de majorité (en %) requis parmi les votes exploitables pour trancher BUY/SELL. */
+static VOTE_THRESHOLD_PCT = 65;
+/** Bonus de confiance (informatif, n'influence jamais le verdict) pour la stratégie 5 (PDH/PDL). */
+static STRATEGIE_5_BONUS = 6;
+/** Bonus de confiance (informatif, n'influence jamais le verdict) pour la stratégie 7 (structure Dow). */
+static STRATEGIE_7_BONUS = 6;
 /**
 * @param {Array<object>} rows Tableau d'objets OHLCV (Ã©quivalent du DataFrame pandas)
 * @param {string} symbol
@@ -2268,6 +2277,334 @@ report.plan = plan;
 // ÃTAPE 7 â VERDICT
 report.verdict = this.verdictFromRr(plan, setupConfirme);
 return report;
+}
+// ==================================================================================
+// ARBITRAGE — VOTE INDÉPENDANT DE CHAQUE STRATÉGIE (BUY / SELL / AUCUN VERDICT)
+// ==================================================================================
+/**
+ * Convertit une direction textuelle du moteur ("haussier"/"baissier") en
+ * verdict exploitable par l'arbitre. Toute autre valeur (null, "neutre",
+ * "range", etc.) est traitée comme "pas de verdict" — jamais forcée.
+ */
+_verdictFromDirection(direction) {
+  if (direction === "haussier") return "BUY";
+  if (direction === "baissier") return "SELL";
+  return null;
+}
+/**
+ * Construit un "vote" normalisé pour une stratégie.
+ * - applicable=false  -> la stratégie ne reconnaît pas sa configuration :
+ *   elle est EXCLUE du décompte (jamais comptée comme un vote négatif).
+ */
+_buildVote(id, label, { applicable, direction = null, reason = null, raw = null } = {}) {
+  const verdict = applicable ? this._verdictFromDirection(direction) : null;
+  return {
+    id,
+    label,
+    applicable: Boolean(applicable) && verdict !== null,
+    verdict,
+    reason,
+    // Sous-résultat brut du détecteur (tel que calculé par le moteur), utile
+    // pour un audit externe indépendant (ex. arbitrageBot.js) qui a besoin de
+    // voir le détail sans re-implémenter la détection.
+    raw,
+  };
+}
+/**
+ * Exécute TOUTES les stratégies mécaniques de façon indépendante et fait
+ * arbitrer le résultat par un vote à seuil, conformément aux règles :
+ *
+ * - chaque stratégie répond indépendamment BUY / SELL / aucun verdict ;
+ * - une stratégie qui ne reconnaît pas sa configuration n'est PAS un vote
+ *   négatif : elle est simplement exclue du décompte ;
+ * - seuls les votes réellement exploitables (BUY ou SELL) sont comptés ;
+ * - BUY >= 65% des votes exploitables -> "BUY" ;
+ * - SELL >= 65% des votes exploitables -> "SELL" ;
+ * - sinon (majorité insuffisante, 50/50, conflit) -> "PAS DE TRADE" ;
+ * - aucun vote exploitable (données insuffisantes / rien reconnu) ->
+ *   "PAS DE TRADE" ;
+ * - les stratégies 5 (PDH/PDL) et 7 (structure Dow) restent des stratégies
+ *   d'observation/confirmation : elles NE VOTENT PAS dans le décompte
+ *   principal. Quand elles reconnaissent réellement une configuration,
+ *   elles ajoutent un bonus de confiance (+6 chacune) qui est
+ *   PUREMENT INFORMATIF — il n'abaisse jamais le seuil de 65% et ne peut
+ *   jamais, à lui seul, transformer un "PAS DE TRADE" en BUY/SELL.
+ *
+ * Ne modifie rien à `runFullAnalysis` (comportement historique conservé).
+ *
+ * @param {object} [options]
+ * @param {number|null} [options.niveauPourBreakout] Niveau externe requis
+ *   par "breakout_retest" et "liquidity_run_sweep". Si absent, ces deux
+ *   stratégies sont simplement exclues du vote (données insuffisantes),
+ *   jamais comptées contre un camp.
+ * @param {"haussier"|"baissier"|null} [options.directionPourBreakout]
+ */
+runArbitratedAnalysis({ niveauPourBreakout = null, directionPourBreakout = null } = {}) {
+  const votes = [];
+  const erreurs = [];
+  const safe = (id, label, fn) => {
+    try {
+      votes.push(fn());
+    } catch (err) {
+      erreurs.push(`${label} : impossible à évaluer (${err.message}).`);
+      votes.push(this._buildVote(id, label, { applicable: false, reason: `Erreur : ${err.message}` }));
+    }
+  };
+  // 1. VWAP (Bounce / Reject)
+  safe("vwap", "VWAP Bounce/Reject", () => {
+    const r = this.detectVwapSetup();
+    return this._buildVote("vwap", "VWAP Bounce/Reject", {
+      applicable: Boolean(r.type && r.confirme),
+      direction: r.direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 2. Market Structure (uniquement si un BOS est confirmé — un CHoCH seul reste une alerte)
+  safe("market_structure", "Market Structure (BOS)", () => {
+    const r = this.detectMarketStructure();
+    const applicable = Boolean(r.bos);
+    return this._buildVote("market_structure", "Market Structure (BOS)", {
+      applicable,
+      direction: applicable ? r.structure : null,
+      reason: r.bos || r.choch || r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 3. Breakout & Retest (nécessite niveauPourBreakout + directionPourBreakout)
+  safe("breakout_retest", "Breakout & Retest", () => {
+    if (niveauPourBreakout === null || directionPourBreakout === null) {
+      return this._buildVote("breakout_retest", "Breakout & Retest", {
+        applicable: false,
+        reason: "Niveau/direction non fournis pour ce passage — stratégie non évaluable.",
+      });
+    }
+    const r = this.detectBreakAndRetest(niveauPourBreakout, directionPourBreakout);
+    return this._buildVote("breakout_retest", "Breakout & Retest", {
+      applicable: r.confirme,
+      direction: directionPourBreakout,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 4. Liquidity Sweep
+  safe("liquidity_sweep", "Liquidity Sweep", () => {
+    const r = this.detectLiquiditySweep();
+    return this._buildVote("liquidity_sweep", "Liquidity Sweep", {
+      applicable: r.sweepDetecte,
+      direction: r.direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 5. AMD (uniquement quand la phase de distribution est confirmée)
+  safe("amd", "AMD (distribution)", () => {
+    const r = this.detectAmd();
+    return this._buildVote("amd", "AMD (distribution)", {
+      applicable: r.distribution !== null,
+      direction: r.distribution,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 6. Trend / Momentum
+  safe("trend_momentum", "Trend/Momentum", () => {
+    const r = this.detectTrendMomentum();
+    return this._buildVote("trend_momentum", "Trend/Momentum", {
+      applicable: r.confirme,
+      direction: r.direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 7. Mean Reversion
+  safe("mean_reversion", "Mean Reversion", () => {
+    const r = this.detectMeanReversion();
+    return this._buildVote("mean_reversion", "Mean Reversion", {
+      applicable: r.confirme,
+      direction: r.direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 8. Fair Value Gap (le plus récent, non comblé)
+  safe("fair_value_gap", "Fair Value Gap", () => {
+    const ouverts = this.detectFairValueGaps().filter((g) => !g.comble);
+    const dernier = ouverts[ouverts.length - 1] || null;
+    return this._buildVote("fair_value_gap", "Fair Value Gap", {
+      applicable: Boolean(dernier),
+      direction: dernier ? dernier.direction : null,
+      reason: dernier
+        ? `FVG ${dernier.direction} non comblé entre ${round(dernier.bas, 5)} et ${round(dernier.haut, 5)}.`
+        : "Aucun FVG ouvert détecté.",
+      raw: { dernier, totalGapsOuverts: ouverts.length },
+    });
+  });
+  // 9. Liquidity Run / Sweep (nécessite niveauPourBreakout)
+  safe("liquidity_run_sweep", "Liquidity Run/Sweep", () => {
+    if (niveauPourBreakout === null) {
+      return this._buildVote("liquidity_run_sweep", "Liquidity Run/Sweep", {
+        applicable: false,
+        reason: "Niveau non fourni pour ce passage — stratégie non évaluable.",
+      });
+    }
+    const r = this.detectLiquidityRunOrSweep(niveauPourBreakout);
+    const direction = r.type ? (r.type.endsWith("haussier") ? "haussier" : "baissier") : null;
+    return this._buildVote("liquidity_run_sweep", "Liquidity Run/Sweep", {
+      applicable: Boolean(r.type),
+      direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 10. Opening Range Breakout
+  safe("orb", "Opening Range Breakout", () => {
+    const r = this.detectOpeningRangeBreakout();
+    let direction = null;
+    let applicable = false;
+    if (r.confirme) {
+      const up = Boolean(r.breakoutHaussier && r.breakoutHaussier.confirme);
+      const down = Boolean(r.breakoutBaissier && r.breakoutBaissier.confirme);
+      if (up && !down) { direction = "haussier"; applicable = true; }
+      else if (down && !up) { direction = "baissier"; applicable = true; }
+      // up && down simultanément = configuration incohérente -> non applicable, on ne force rien.
+    }
+    return this._buildVote("orb", "Opening Range Breakout", {
+      applicable,
+      direction,
+      reason: (r.details || []).join(" ") || null,
+      raw: r,
+    });
+  });
+  // 11. Double Top / Double Bottom
+  safe("double_top_bottom", "Double Top/Bottom", () => {
+    const r = this.detectDoubleTopBottom();
+    const direction = r.pattern === "double_top" ? "baissier" : r.pattern === "double_bottom" ? "haussier" : null;
+    return this._buildVote("double_top_bottom", "Double Top/Bottom", {
+      applicable: r.confirme,
+      direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 12. Divergence RSI
+  safe("rsi_divergence", "Divergence RSI", () => {
+    const r = this.detectRsiDivergence();
+    return this._buildVote("rsi_divergence", "Divergence RSI", {
+      applicable: r.confirme,
+      direction: r.type,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // 13. Order Blocks (5 étoiles — imbalance obligatoire, jamais devinée)
+  safe("order_blocks", "Order Blocks", () => {
+    const valides = this.detectOrderBlocks().filter((ob) => ob.estUtilisableSelonLaMethode());
+    if (valides.length === 0) {
+      return this._buildVote("order_blocks", "Order Blocks", {
+        applicable: false,
+        reason: "Aucun Order Block avec imbalance validée.",
+        raw: { totalBlocsDetectes: this.detectOrderBlocks().length, totalBlocsValides: 0 },
+      });
+    }
+    const meilleur = valides.reduce((best, ob) => (ob.score() > best.score() ? ob : best));
+    return this._buildVote("order_blocks", "Order Blocks", {
+      applicable: true,
+      direction: meilleur.direction,
+      reason: `Order Block ${meilleur.direction}, score ${meilleur.score()}/5.`,
+      raw: { direction: meilleur.direction, score: meilleur.score(), totalBlocsValides: valides.length },
+    });
+  });
+  // 14. Displacement
+  safe("displacement", "Displacement", () => {
+    const r = this.detectDisplacement();
+    return this._buildVote("displacement", "Displacement", {
+      applicable: r.detecte,
+      direction: r.direction,
+      reason: r.details[r.details.length - 1] || null,
+      raw: r,
+    });
+  });
+  // ---- Stratégies 5 et 7 : observation / confirmation, BONUS uniquement ----
+  let strategie5 = { confirme: false, direction: null, setupIdentifie: null };
+  let strategie7 = { confirme: false, direction: null, setupIdentifie: null };
+  try { strategie5 = detectPreviousDayLiquidityConfirmation(this); }
+  catch (err) { erreurs.push(`Stratégie 5 (PDH/PDL) : impossible à évaluer (${err.message}).`); }
+  try { strategie7 = detectDowStructureConfirmation(this); }
+  catch (err) { erreurs.push(`Stratégie 7 (structure Dow) : impossible à évaluer (${err.message}).`); }
+  const bonusDetails = [];
+  let bonusBuy = 0;
+  let bonusSell = 0;
+  if (strategie5.confirme) {
+    const v = this._verdictFromDirection(strategie5.direction);
+    if (v === "BUY") bonusBuy += MarketAnalyzer.STRATEGIE_5_BONUS;
+    if (v === "SELL") bonusSell += MarketAnalyzer.STRATEGIE_5_BONUS;
+    if (v) bonusDetails.push({ id: "strategie_5_pdh_pdl", verdict: v, bonus: MarketAnalyzer.STRATEGIE_5_BONUS, reason: strategie5.setupIdentifie });
+  }
+  if (strategie7.confirme) {
+    const v = this._verdictFromDirection(strategie7.direction);
+    if (v === "BUY") bonusBuy += MarketAnalyzer.STRATEGIE_7_BONUS;
+    if (v === "SELL") bonusSell += MarketAnalyzer.STRATEGIE_7_BONUS;
+    if (v) bonusDetails.push({ id: "strategie_7_dow_structure", verdict: v, bonus: MarketAnalyzer.STRATEGIE_7_BONUS, reason: strategie7.setupIdentifie });
+  }
+  // ---- Décompte des votes réellement exploitables ----
+  const exploitables = votes.filter((v) => v.applicable && v.verdict !== null);
+  const buyVotes = exploitables.filter((v) => v.verdict === "BUY");
+  const sellVotes = exploitables.filter((v) => v.verdict === "SELL");
+  const total = exploitables.length;
+  const buyPct = total > 0 ? round((buyVotes.length / total) * 100, 1) : 0;
+  const sellPct = total > 0 ? round((sellVotes.length / total) * 100, 1) : 0;
+  let verdict = "PAS DE TRADE";
+  let raison;
+  if (total === 0) {
+    raison = "Aucune stratégie n'a produit de verdict exploitable (données insuffisantes ou aucune configuration reconnue).";
+  } else if (buyPct >= MarketAnalyzer.VOTE_THRESHOLD_PCT && buyPct > sellPct) {
+    verdict = "BUY";
+    raison = `${buyVotes.length}/${total} stratégies exploitables votent BUY (${buyPct}%, seuil ${MarketAnalyzer.VOTE_THRESHOLD_PCT}%).`;
+  } else if (sellPct >= MarketAnalyzer.VOTE_THRESHOLD_PCT && sellPct > buyPct) {
+    verdict = "SELL";
+    raison = `${sellVotes.length}/${total} stratégies exploitables votent SELL (${sellPct}%, seuil ${MarketAnalyzer.VOTE_THRESHOLD_PCT}%).`;
+  } else {
+    raison = `Majorité insuffisante ou conflit (BUY ${buyPct}%, SELL ${sellPct}%) — seuil requis : ${MarketAnalyzer.VOTE_THRESHOLD_PCT}%.`;
+  }
+  return {
+    symbol: this.symbol,
+    timeframe: this.timeframe,
+    verdict, // "BUY" | "SELL" | "PAS DE TRADE" — jamais forcé
+    raison,
+    stats: {
+      totalStrategiesEvaluees: votes.length,
+      totalExploitable: total,
+      buy: { count: buyVotes.length, pct: buyPct },
+      sell: { count: sellVotes.length, pct: sellPct },
+      seuil: MarketAnalyzer.VOTE_THRESHOLD_PCT,
+    },
+    votes, // détail par stratégie : {id, label, applicable, verdict, reason, raw}
+    // Résultats bruts des stratégies 5 et 7, TOUJOURS présents (même non confirmés) —
+    // utiles à un audit externe indépendant (arbitrageBot.js), qui n'a pas accès
+    // aux bougies et ne doit pas re-deviner ces résultats.
+    observations: {
+      strategie_5_pdh_pdl: strategie5,
+      strategie_7_dow_structure: strategie7,
+    },
+    // Rappel explicite : "support_resistance" et les patterns graphiques
+    // (detectChartPatterns) NE SONT PAS inclus dans ce vote d'arbitrage (zones
+    // et patterns non directionnels par nature dans ce moteur) — ils restent
+    // disponibles séparément via detectSupportResistanceZones()/detectChartPatterns(),
+    // en dehors de l'arbitrage.
+    strategiesExclusDuVote: {
+      support_resistance: "Zones non directionnelles — jamais transformées en vote BUY/SELL.",
+      chart_patterns: "Patterns graphiques (detectChartPatterns) non inclus dans le vote — informatif uniquement.",
+      candlestick_patterns: "Patterns de bougies (detectCandlestickPatterns) non inclus dans le vote — une bougie ne décide jamais seule.",
+    },
+    bonus: {
+      buy: bonusBuy,
+      sell: bonusSell,
+      details: bonusDetails,
+      note: "Bonus des stratégies 5 et 7 : purement informatif, n'influence jamais le verdict ci-dessus.",
+    },
+    erreurs,
+  };
 }
 }
 // ==================================================================================
