@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import express from "express";
 import cors from "cors";
 import {
@@ -6,6 +5,7 @@ import {
   detectPreviousDayLiquidityConfirmation,
   detectDowStructureConfirmation
 } from "./tradingRulesEngine.js";
+import { validateArbitrage, formatArbitrageReport } from "./arbitrageBot.js";
 import {
   TRADING_MODE,
   TRADING_MODES,
@@ -20,6 +20,54 @@ const app = express();
 
 const port = process.env.PORT || 10000;
 let derniereDecision = null;
+
+/* ============================================================
+   CACHE MULTI-TIMEFRAME (pour arbitrageBot.js)
+   TradingView envoie une alerte par timeframe (M5, M15, H1, H4,
+   D1, W...) sur le MÊME webhook. On garde donc, PAR SYMBOLE, le
+   dernier rapport d'arbitrage connu pour chaque timeframe déjà
+   reçu, afin de pouvoir évaluer la cohérence inter-timeframes dès
+   qu'une nouvelle alerte arrive — sans avoir à tout recalculer ni
+   à changer marketDataAdapter.js.
+   ============================================================ */
+
+const TIMEFRAME_CACHE_TTL_MINUTES = Math.max(
+  1,
+  Number.parseInt(process.env.TIMEFRAME_CACHE_TTL_MINUTES || "1440", 10)
+);
+
+// symbol -> { [timeframe]: { rapport, recordedAt } }
+const rapportsParSymboleEtTimeframe = new Map();
+
+function mettreEnCacheTimeframe(symbol, timeframe, rapport) {
+  if (!rapportsParSymboleEtTimeframe.has(symbol)) {
+    rapportsParSymboleEtTimeframe.set(symbol, {});
+  }
+  rapportsParSymboleEtTimeframe.get(symbol)[timeframe] = {
+    rapport,
+    recordedAt: Date.now()
+  };
+}
+
+/**
+ * Retourne, pour un symbole donné, une map { timeframe: rapport } contenant
+ * uniquement les rapports encore "frais" (< TIMEFRAME_CACHE_TTL_MINUTES),
+ * prête à être passée à `validateArbitrage({ timeframes })`. Un timeframe
+ * jamais reçu, ou devenu trop ancien, est simplement absent — jamais compté
+ * comme une contradiction.
+ */
+function obtenirTimeframesFraisPourSymbole(symbol) {
+  const parTimeframe = rapportsParSymboleEtTimeframe.get(symbol) || {};
+  const limiteMs = TIMEFRAME_CACHE_TTL_MINUTES * 60 * 1000;
+  const maintenant = Date.now();
+  const resultat = {};
+  for (const [timeframe, entree] of Object.entries(parTimeframe)) {
+    if (maintenant - entree.recordedAt <= limiteMs) {
+      resultat[timeframe] = entree.rapport;
+    }
+  }
+  return resultat;
+}
 
 const ALERT_MEMORY_LIMIT = Math.max(
   1,
@@ -135,33 +183,33 @@ function estDoublon(alerte) {
    AUCUN ORDRE BROKER
    ============================================================ */
 
-function construireDecision(alerte, rapport) {
-  const plan = rapport.plan || null;
-
-  const signal =
-    rapport.verdict === "SETUP VALIDÉ"
-      ? plan?.direction === "achat"
-        ? "BUY"
-        : plan?.direction === "vente"
-          ? "SELL"
-          : "SETUP VALIDÉ"
-      : rapport.verdict === "ATTENDRE CONFIRMATION"
-        ? "ATTENDRE CONFIRMATION"
-        : "PAS DE TRADE";
-
+function construireDecision(alerte, rapportArbitrage, validation) {
   return {
     id: crypto.randomUUID(),
     alerteTest: alerte.action === "test",
     symbol: alerte.symbol,
     exchange: alerte.exchange,
     timeframe: alerte.timeframe,
-    signal,
-    verdict: rapport.verdict,
-    motif: rapport.toText(),
-    entree: plan?.entree ?? null,
-    stop: plan?.stop ?? null,
-    objectif: plan?.objectif ?? null,
-    rr: plan?.rr ?? null,
+    // Verdict officiel du moteur (tradingRulesEngine.js) — BUY / SELL / PAS DE TRADE.
+    // C'est LUI qui fait foi. Le bot (arbitrageBot.js) ne fait que le commenter.
+    signal: rapportArbitrage.verdict,
+    verdict: rapportArbitrage.verdict,
+    raisonMoteur: rapportArbitrage.raison,
+    stats: rapportArbitrage.stats,
+    votes: rapportArbitrage.votes,
+    bonus: rapportArbitrage.bonus,
+    // Couche de validation/cohérence — n'a jamais pu modifier le verdict ci-dessus.
+    validationBot: validation.validationBot,
+    coherence: validation.coherence,
+    timeframesCompares: validation.timeframes,
+    motif: formatArbitrageReport(validation),
+    // Aucun plan de risque n'est calculé par l'arbitrage (pas d'entrée/stop/
+    // objectif fournis par TradingView sur ce webhook) — inchangé par rapport
+    // au comportement précédent, qui passait déjà `plan: null` ici.
+    entree: null,
+    stop: null,
+    objectif: null,
+    rr: null,
     heure: new Date().toISOString(),
     mode: "analysis_only",
     ordreEnvoye: false
@@ -194,24 +242,23 @@ async function analyserAlerteTradingView(alerte) {
     2.0
   );
 
-  analyseur.registerStrategy(
-    "previous_day_liquidity",
-    detectPreviousDayLiquidityConfirmation
-  );
+  // Étape 1 — MOTEUR : verdict officiel, arbitré entre toutes les stratégies.
+  const rapportArbitrage = analyseur.runArbitratedAnalysis();
 
-  analyseur.registerStrategy(
-    "dow_structure",
-    detectDowStructureConfirmation
-  );
+  // On mémorise ce rapport pour CE timeframe/symbole, pour que les prochaines
+  // alertes (autres timeframes) puissent l'utiliser dans leur cohérence.
+  mettreEnCacheTimeframe(symbol, timeframe, rapportArbitrage);
 
-  const rapport = analyseur.runFullAnalysis({
-    strategie: "auto",
-    plan: null
+  // Étape 2 — BOT : validation/cohérence uniquement, ne modifie jamais le verdict.
+  const validation = validateArbitrage({
+    officiel: rapportArbitrage,
+    timeframes: obtenirTimeframesFraisPourSymbole(symbol)
   });
 
   const decision = construireDecision(
     alerte,
-    rapport
+    rapportArbitrage,
+    validation
   );
 
   derniereDecision = decision;
