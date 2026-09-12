@@ -1061,20 +1061,6 @@ app.listen(port, "0.0.0.0", () => {
 });
 import express from "express";
 import cors from "cors";
-import {
-  MarketAnalyzer,
-  detectPreviousDayLiquidityConfirmation,
-  detectDowStructureConfirmation
-} from "./tradingRulesEngine.mjs";
-import {
-  TRADING_MODE,
-  TRADING_MODES,
-  ALLOWED_SYMBOLS,
-  MAX_TRADES_PER_SESSION
-} from "./config.mjs";
-import { riskManager } from "./riskManager.mjs";
-import * as executionManager from "./executionManager.mjs";
-import * as broker from "./brokerAdapter.mjs";
 
 const app = express();
 
